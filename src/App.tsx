@@ -23,6 +23,7 @@ import { CompanionPanel } from './components/CompanionPanel';
 import { EscapeRoutes } from './components/EscapeRoutes';
 import { AncientRuinsPuzzles } from './components/AncientRuinsPuzzles';
 import { AIImageStudio } from './components/AIImageStudio';
+import { ThreeDView } from './components/ThreeDView';
 import { sound } from './utils/audio';
 import {
   Map,
@@ -35,13 +36,14 @@ import {
   Heart,
   Skull,
   ScrollText,
+  Gamepad2,
 } from 'lucide-react';
 
 export default function App() {
   const [gameState, setGameState] = useState<GameState>(() => createInitialState());
   const [activeTab, setActiveTab] = useState<
-    'map' | 'base' | 'companion' | 'escape' | 'ruins' | 'studio'
-  >('map');
+    '3d' | 'map' | 'base' | 'companion' | 'escape' | 'ruins' | 'studio'
+  >('3d');
   const [isGathering, setIsGathering] = useState<boolean>(false);
   const [isSendingChat, setIsSendingChat] = useState<boolean>(false);
   const [catastropheModal, setCatastropheModal] = useState<{
@@ -637,6 +639,33 @@ export default function App() {
     }));
   };
 
+  const handleUpdateInventoryFrom3D = (itemId: string, amount: number) => {
+    setGameState((prev) => ({
+      ...prev,
+      inventory: {
+        ...prev.inventory,
+        [itemId]: (prev.inventory[itemId] || 0) + amount,
+      },
+    }));
+  };
+
+  const handleLogEventFrom3D = (textHu: string) => {
+    setGameState((prev) => ({
+      ...prev,
+      eventLogs: [
+        {
+          id: `ev-3d-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          day: prev.day,
+          time: `${Math.floor(prev.timeOfDayHours).toString().padStart(2, '0')}:00`,
+          text: textHu,
+          textHu: textHu,
+          type: 'survival',
+        },
+        ...prev.eventLogs,
+      ],
+    }));
+  };
+
   // Game over state
   if (gameState.isGameOver) {
     return (
@@ -679,6 +708,21 @@ export default function App() {
       {/* Main Tab Navigation */}
       <nav className="bg-slate-900/95 border-b border-emerald-950/80 px-4 py-2 sticky top-[108px] z-30 backdrop-blur shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-start md:justify-center gap-2 overflow-x-auto scrollbar-none text-xs font-semibold py-1">
+          <button
+            onClick={() => {
+              sound.playClick();
+              setActiveTab('3d');
+            }}
+            className={`px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition shrink-0 ${
+              activeTab === '3d'
+                ? 'bg-amber-600 text-white shadow-md shadow-amber-900/40 ring-1 ring-amber-400'
+                : 'text-amber-400 hover:text-amber-200 hover:bg-stone-800/60'
+            }`}
+          >
+            <Gamepad2 className="w-4 h-4" />
+            <span>🎮 3D Túlélő Mód</span>
+          </button>
+
           <button
             onClick={() => {
               sound.playClick();
@@ -773,6 +817,15 @@ export default function App() {
 
       {/* Viewport Content */}
       <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6">
+        {activeTab === '3d' && (
+          <ThreeDView
+            gameState={gameState}
+            onUpdateInventory={handleUpdateInventoryFrom3D}
+            onLogEvent={handleLogEventFrom3D}
+            onSwitchToTab={(tab) => setActiveTab(tab as any)}
+          />
+        )}
+
         {activeTab === 'map' && (
           <IslandMap
             state={gameState}
