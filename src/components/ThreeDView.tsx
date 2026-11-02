@@ -21,6 +21,10 @@ import {
   Zap,
   Hand,
   ChevronUp,
+  ChevronDown,
+  ZoomIn,
+  ZoomOut,
+  Crosshair,
 } from 'lucide-react';
 
 interface ThreeDViewProps {
@@ -62,6 +66,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     right: boolean;
     turnLeft: boolean;
     turnRight: boolean;
+    pitchUp: boolean;
+    pitchDown: boolean;
+    zoomIn: boolean;
+    zoomOut: boolean;
     jump: boolean;
     sprint: boolean;
   }>({
@@ -71,9 +79,15 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     right: false,
     turnLeft: false,
     turnRight: false,
+    pitchUp: false,
+    pitchDown: false,
+    zoomIn: false,
+    zoomOut: false,
     jump: false,
     sprint: false,
   });
+
+  const resetCameraRef = useRef<() => void>(() => {});
 
   // Callbacks ref to avoid rebuilding WebGL scene on state changes
   const callbacksRef = useRef({
@@ -451,14 +465,26 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     playerGroup.add(playerTorso, playerHead, playerHair, playerBackpack, leftLeg, rightLeg, leftArm, rightArm);
     scene.add(playerGroup);
 
-    // Player position state
+    // Camera Orbit State (horizontal yaw, vertical pitch, distance)
+    const cam = {
+      yaw: 0, // radians around character
+      pitch: 0.35, // elevation angle (~20 degrees downward perspective)
+      distance: 5.5, // distance to character
+    };
+
+    // Player position and character orientation state
     const player = {
-      pos: new THREE.Vector3(15, getGroundHeight(15, 76) + 1.6, 76),
+      pos: new THREE.Vector3(15, getGroundHeight(15, 76) + 1.8, 76),
       velocity: new THREE.Vector3(),
-      yaw: 0,
-      pitch: 0,
+      charYaw: 0, // direction the survivor character model faces
       isGrounded: true,
       speed: 13,
+    };
+
+    resetCameraRef.current = () => {
+      cam.yaw = player.charYaw + Math.PI;
+      cam.pitch = 0.35;
+      cam.distance = 5.5;
     };
 
     // 12. Input Listeners (Keyboard + Mouse + Touch)
@@ -475,6 +501,9 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           nearestPropRef.current.action();
         }
       }
+      if (e.code === 'KeyR' || e.code === 'Numpad5') {
+        resetCameraRef.current();
+      }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       keys[e.code] = false;
@@ -483,17 +512,50 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    // Desktop pointer lock mouse look
-    const onMouseMove = (e: MouseEvent) => {
-      if (document.pointerLockElement === container) {
-        player.yaw -= e.movementX * 0.0025;
-        player.pitch = Math.max(-1.1, Math.min(1.1, player.pitch - e.movementY * 0.0025));
+    // Desktop mouse look: supports both click-and-drag and pointer lock
+    let isMouseDown = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 0 || e.button === 2) {
+        isMouseDown = true;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
       }
     };
-    window.addEventListener('mousemove', onMouseMove);
 
-    const onContainerClick = () => {
-      if (document.pointerLockElement !== container && window.innerWidth > 900) {
+    const onMouseUp = () => {
+      isMouseDown = false;
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (document.pointerLockElement === container) {
+        cam.yaw -= e.movementX * 0.003;
+        cam.pitch = Math.max(-0.35, Math.min(1.3, cam.pitch + e.movementY * 0.003));
+      } else if (isMouseDown) {
+        const dx = e.clientX - lastMouseX;
+        const dy = e.clientY - lastMouseY;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+
+        cam.yaw -= dx * 0.0055;
+        cam.pitch = Math.max(-0.35, Math.min(1.3, cam.pitch + dy * 0.0055));
+      }
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      cam.distance = Math.max(2.5, Math.min(15, cam.distance + e.deltaY * 0.006));
+    };
+
+    container.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMouseMove);
+    container.addEventListener('wheel', onWheel, { passive: false });
+
+    const onContainerClick = (e: MouseEvent) => {
+      if (e.detail === 2 && document.pointerLockElement !== container && window.innerWidth > 900) {
         container.requestPointerLock?.();
       }
     };
@@ -501,13 +563,25 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // Touch look handling on canvas
     let touchLook = { x: 0, y: 0, active: false, id: -1 };
+    let initialPinchDist = 0;
+    let initialCamDist = 5.5;
 
     const onCanvasTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialPinchDist = Math.hypot(dx, dy);
+        initialCamDist = cam.distance;
+        return;
+      }
+
       const rect = container.getBoundingClientRect();
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
-        // If touch is on right 55% of canvas, treat as camera swipe
-        if (t.clientX - rect.left > rect.width * 0.45 && !touchLook.active) {
+        const relX = t.clientX - rect.left;
+        const relY = t.clientY - rect.top;
+        // Swipe on upper half or right 65% of screen rotates camera
+        if ((relX > rect.width * 0.35 || relY < rect.height * 0.5) && !touchLook.active) {
           touchLook = { x: t.clientX, y: t.clientY, active: true, id: t.identifier };
           break;
         }
@@ -515,6 +589,16 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     };
 
     const onCanvasTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && initialPinchDist > 0) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const factor = initialPinchDist / Math.max(dist, 10);
+        cam.distance = Math.max(2.5, Math.min(15, initialCamDist * factor));
+        e.preventDefault();
+        return;
+      }
+
       if (!touchLook.active) return;
       for (let i = 0; i < e.changedTouches.length; i++) {
         const t = e.changedTouches[i];
@@ -524,8 +608,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           touchLook.x = t.clientX;
           touchLook.y = t.clientY;
 
-          player.yaw -= dx * 0.0055;
-          player.pitch = Math.max(-1.1, Math.min(1.1, player.pitch - dy * 0.0055));
+          // Horizontal swipe orbits 360 degrees around survivor
+          cam.yaw -= dx * 0.007;
+          // Vertical swipe tilts pitch up / down
+          cam.pitch = Math.max(-0.35, Math.min(1.3, cam.pitch + dy * 0.007));
           e.preventDefault();
           break;
         }
@@ -533,6 +619,9 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     };
 
     const onCanvasTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialPinchDist = 0;
+      }
       for (let i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier === touchLook.id) {
           touchLook.active = false;
@@ -574,29 +663,51 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       const isSprinting = keys['ShiftLeft'] || keys['ShiftRight'] || vKeys.sprint;
       const currentSpeed = isSprinting ? player.speed * 1.55 : player.speed;
 
-      // Keyboard & Virtual D-Pad Input
-      if (keys['KeyW'] || keys['ArrowUp'] || vKeys.forward) moveVec.z -= 1;
-      if (keys['KeyS'] || keys['ArrowDown'] || vKeys.backward) moveVec.z += 1;
-      if (keys['KeyA'] || keys['ArrowLeft'] || vKeys.left) moveVec.x -= 1;
-      if (keys['KeyD'] || keys['ArrowRight'] || vKeys.right) moveVec.x += 1;
+      // Movement keys (WASD + Touch D-Pad)
+      if (keys['KeyW'] || vKeys.forward) moveVec.z -= 1;
+      if (keys['KeyS'] || vKeys.backward) moveVec.z += 1;
+      if (keys['KeyA'] || vKeys.left) moveVec.x -= 1;
+      if (keys['KeyD'] || vKeys.right) moveVec.x += 1;
 
-      // Smooth touch turn buttons (↺ / ↻)
-      if (vKeys.turnLeft) {
-        player.yaw += 2.4 * dt;
+      // Camera Orbit Keys (Arrow keys + IJKL + Touch HUD Buttons)
+      if (keys['ArrowLeft'] || keys['KeyJ'] || vKeys.turnLeft) {
+        cam.yaw += 2.4 * dt;
       }
-      if (vKeys.turnRight) {
-        player.yaw -= 2.4 * dt;
+      if (keys['ArrowRight'] || keys['KeyL'] || vKeys.turnRight) {
+        cam.yaw -= 2.4 * dt;
+      }
+      if (keys['ArrowUp'] || keys['KeyI'] || vKeys.pitchUp) {
+        cam.pitch = Math.min(1.3, cam.pitch + 1.8 * dt);
+      }
+      if (keys['ArrowDown'] || keys['KeyK'] || vKeys.pitchDown) {
+        cam.pitch = Math.max(-0.35, cam.pitch - 1.8 * dt);
+      }
+      if (vKeys.zoomIn || keys['NumpadAdd']) {
+        cam.distance = Math.max(2.5, cam.distance - 6.0 * dt);
+      }
+      if (vKeys.zoomOut || keys['NumpadSubtract']) {
+        cam.distance = Math.min(15, cam.distance + 6.0 * dt);
       }
 
       const isMoving = moveVec.lengthSq() > 0.001;
 
       if (isMoving) {
         moveVec.normalize();
-        const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
-        const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
+        // Camera-relative movement vectors on horizontal ground plane
+        const camForward = new THREE.Vector3(-Math.sin(cam.yaw), 0, -Math.cos(cam.yaw));
+        const camRight = new THREE.Vector3(Math.cos(cam.yaw), 0, -Math.sin(cam.yaw));
 
-        const delta = forward.multiplyScalar(-moveVec.z).add(right.multiplyScalar(moveVec.x));
+        const delta = camForward.multiplyScalar(-moveVec.z).add(camRight.multiplyScalar(moveVec.x));
+        delta.normalize();
+
         player.pos.addScaledVector(delta, currentSpeed * dt);
+
+        // Smoothly rotate character to face movement direction
+        const targetCharYaw = Math.atan2(-delta.x, -delta.z);
+        let diff = targetCharYaw - player.charYaw;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        player.charYaw += diff * Math.min(1, 14 * dt);
       }
 
       // Jump
@@ -624,9 +735,9 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         sound.playDangerWarning();
       }
 
-      // Update Survivor 3D Character Model
+      // Update Survivor 3D Character Model (independent facing)
       playerGroup.position.set(player.pos.x, player.pos.y - 1.8, player.pos.z);
-      playerGroup.rotation.y = player.yaw + Math.PI;
+      playerGroup.rotation.y = player.charYaw;
       playerGroup.visible = cameraMode === 'tps';
 
       // Limb swing walking animation
@@ -688,18 +799,24 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         nearestPropRef.current = null;
       }
 
-      // Camera positioning (FPS vs TPS)
+      // Camera positioning (FPS vs True 360° TPS Orbit)
       if (cameraMode === 'fps') {
-        camera.position.copy(player.pos);
-        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.position.set(player.pos.x, player.pos.y + 0.35, player.pos.z);
+        camera.rotation.set(-cam.pitch, cam.yaw + Math.PI, 0, 'YXZ');
       } else {
-        // Third-Person Follow Camera
-        const camOffset = new THREE.Vector3(0, 2.2, 5.5).applyAxisAngle(
-          new THREE.Vector3(0, 1, 0),
-          player.yaw
-        );
-        camera.position.copy(player.pos).add(camOffset);
-        const lookTarget = player.pos.clone().add(new THREE.Vector3(0, 0.9, 0));
+        // Third-Person Spherical Orbit Camera: 360° Horizontal Orbit & Vertical Pitch
+        const lookTarget = player.pos.clone().add(new THREE.Vector3(0, 1.1, 0));
+        const clPitch = Math.max(-0.35, Math.min(1.3, cam.pitch));
+        const horizDist = cam.distance * Math.cos(clPitch);
+        const cx = lookTarget.x + horizDist * Math.sin(cam.yaw);
+        const cy = lookTarget.y + cam.distance * Math.sin(clPitch);
+        const cz = lookTarget.z + horizDist * Math.cos(cam.yaw);
+
+        // Ground clearance check to prevent clipping through terrain
+        const groundHeight = getGroundHeight(cx, cz) + 0.45;
+        const camY = Math.max(cy, groundHeight);
+
+        camera.position.set(cx, camY, cz);
         camera.lookAt(lookTarget);
       }
 
@@ -721,7 +838,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       cancelAnimationFrame(animId);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      container.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('mousemove', onMouseMove);
+      container.removeEventListener('wheel', onWheel);
       window.removeEventListener('resize', onResize);
       container.removeEventListener('click', onContainerClick);
       container.removeEventListener('touchstart', onCanvasTouchStart);
@@ -929,88 +1049,180 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
             </button>
           </div>
 
-          {/* Right Side: Camera Turning & Tactical Action Buttons */}
-          <div className="pointer-events-auto flex flex-col items-end gap-2 select-none touch-none">
-            {/* Camera rotation buttons row */}
+          {/* Right Side: Camera Orbit Cluster & Tactical Action Buttons */}
+          <div className="pointer-events-auto flex flex-col items-end gap-2.5 select-none touch-none">
+            {/* Camera Orbit Control Cluster (360° Turn, Pitch Up/Down, Zoom, Center) */}
+            <div className="bg-slate-950/90 backdrop-blur-md border border-cyan-500/50 rounded-2xl p-2 shadow-2xl flex flex-col items-center gap-1.5">
+              <div className="flex items-center justify-between w-full px-1 text-[10px] font-bold text-cyan-400">
+                <span className="flex items-center gap-1"><Eye className="w-3 h-3" /> KAMERA</span>
+                <button
+                  onClick={() => resetCameraRef.current()}
+                  className="px-1.5 py-0.5 rounded bg-cyan-950/80 hover:bg-cyan-800 text-cyan-200 border border-cyan-500/40 text-[9px] active:scale-90 transition"
+                  title="Kamera visszaállítása a karakter mögé"
+                >
+                  Közép
+                </button>
+              </div>
+
+              {/* Pitch Up (Döntés fel / madártávlat) */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.pitchUp = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.pitchUp = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.pitchUp = false;
+                }}
+                className="w-11 h-9 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-lg flex items-center justify-center text-cyan-300 active:text-white transition shadow"
+                title="Kamera döntés fel (Madártávlat)"
+              >
+                <ArrowUp className="w-5 h-5" />
+              </button>
+
+              {/* Horizontal Turn & Zoom Row */}
+              <div className="flex items-center gap-1.5">
+                {/* Turn Left */}
+                <button
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    virtualKeysRef.current.turnLeft = true;
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    virtualKeysRef.current.turnLeft = false;
+                  }}
+                  onPointerLeave={() => {
+                    virtualKeysRef.current.turnLeft = false;
+                  }}
+                  className="w-11 h-10 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-lg flex items-center justify-center text-cyan-300 active:text-white transition shadow"
+                  title="Kamera forgatás balra (360°)"
+                >
+                  <RotateCcw className="w-5 h-5" />
+                </button>
+
+                {/* Zoom In / Out Buttons */}
+                <div className="flex flex-col gap-1">
+                  <button
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      virtualKeysRef.current.zoomIn = true;
+                    }}
+                    onPointerUp={(e) => {
+                      e.preventDefault();
+                      virtualKeysRef.current.zoomIn = false;
+                    }}
+                    onPointerLeave={() => {
+                      virtualKeysRef.current.zoomIn = false;
+                    }}
+                    className="w-8 h-4.5 bg-slate-900 active:bg-cyan-600 border border-cyan-500/40 rounded flex items-center justify-center text-cyan-200 text-[10px] font-bold"
+                    title="Kamera közelítés"
+                  >
+                    +
+                  </button>
+                  <button
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      virtualKeysRef.current.zoomOut = true;
+                    }}
+                    onPointerUp={(e) => {
+                      e.preventDefault();
+                      virtualKeysRef.current.zoomOut = false;
+                    }}
+                    onPointerLeave={() => {
+                      virtualKeysRef.current.zoomOut = false;
+                    }}
+                    className="w-8 h-4.5 bg-slate-900 active:bg-cyan-600 border border-cyan-500/40 rounded flex items-center justify-center text-cyan-200 text-[10px] font-bold"
+                    title="Kamera távolítás"
+                  >
+                    -
+                  </button>
+                </div>
+
+                {/* Turn Right */}
+                <button
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    virtualKeysRef.current.turnRight = true;
+                  }}
+                  onPointerUp={(e) => {
+                    e.preventDefault();
+                    virtualKeysRef.current.turnRight = false;
+                  }}
+                  onPointerLeave={() => {
+                    virtualKeysRef.current.turnRight = false;
+                  }}
+                  className="w-11 h-10 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-lg flex items-center justify-center text-cyan-300 active:text-white transition shadow"
+                  title="Kamera forgatás jobbra (360°)"
+                >
+                  <RotateCw className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Pitch Down (Döntés le / alsó nézet) */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.pitchDown = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.pitchDown = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.pitchDown = false;
+                }}
+                className="w-11 h-9 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-lg flex items-center justify-center text-cyan-300 active:text-white transition shadow"
+                title="Kamera döntés le (Földi perspektíva)"
+              >
+                <ArrowDown className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Action Buttons: Jump + Collect */}
             <div className="flex items-center gap-2">
               <button
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  virtualKeysRef.current.turnLeft = true;
+                  virtualKeysRef.current.jump = true;
                 }}
                 onPointerUp={(e) => {
                   e.preventDefault();
-                  virtualKeysRef.current.turnLeft = false;
+                  virtualKeysRef.current.jump = false;
                 }}
                 onPointerLeave={() => {
-                  virtualKeysRef.current.turnLeft = false;
+                  virtualKeysRef.current.jump = false;
                 }}
-                className="w-12 h-12 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-full shadow-lg flex items-center justify-center text-cyan-300 active:text-white active:scale-95 transition"
-                title="Kamera balra"
+                className="w-14 h-14 bg-sky-950/90 active:bg-sky-500 border-2 border-sky-400 rounded-2xl shadow-xl flex flex-col items-center justify-center text-xs font-bold text-sky-200 active:text-slate-950 active:scale-95 transition"
               >
-                <RotateCcw className="w-5 h-5" />
+                <ChevronUp className="w-5 h-5" />
+                <span className="text-[9px] font-bold">UGRÁS</span>
               </button>
 
               <button
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  virtualKeysRef.current.turnRight = true;
-                }}
-                onPointerUp={(e) => {
-                  e.preventDefault();
-                  virtualKeysRef.current.turnRight = false;
-                }}
-                onPointerLeave={() => {
-                  virtualKeysRef.current.turnRight = false;
-                }}
-                className="w-12 h-12 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-full shadow-lg flex items-center justify-center text-cyan-300 active:text-white active:scale-95 transition"
-                title="Kamera jobbra"
+                onClick={handleTriggerAction}
+                className="w-16 h-16 bg-emerald-600 active:bg-emerald-400 border-2 border-emerald-300 rounded-2xl shadow-2xl flex flex-col items-center justify-center text-white active:scale-90 transition"
               >
-                <RotateCw className="w-5 h-5" />
+                <Hand className="w-6 h-6 mb-0.5" />
+                <span className="text-[10px] font-black uppercase tracking-wider">Gyűjtés</span>
               </button>
             </div>
-
-            {/* Jump Button */}
-            <button
-              onPointerDown={(e) => {
-                e.preventDefault();
-                virtualKeysRef.current.jump = true;
-              }}
-              onPointerUp={(e) => {
-                e.preventDefault();
-                virtualKeysRef.current.jump = false;
-              }}
-              onPointerLeave={() => {
-                virtualKeysRef.current.jump = false;
-              }}
-              className="w-14 h-14 bg-sky-950/90 active:bg-sky-500 border-2 border-sky-400 rounded-full shadow-xl flex items-center justify-center text-xs font-bold text-sky-200 active:text-slate-950 active:scale-95 transition"
-            >
-              <div className="flex flex-col items-center">
-                <ChevronUp className="w-5 h-5" />
-                <span className="text-[9px] font-bold">UGRÁS</span>
-              </div>
-            </button>
-
-            {/* Interact / Collect Button (E) */}
-            <button
-              onClick={handleTriggerAction}
-              className="w-16 h-16 bg-emerald-600 active:bg-emerald-400 border-2 border-emerald-300 rounded-full shadow-2xl flex flex-col items-center justify-center text-white active:scale-90 transition"
-            >
-              <Hand className="w-6 h-6 mb-0.5" />
-              <span className="text-[10px] font-black uppercase tracking-wider">Gyűjtés</span>
-            </button>
           </div>
         </div>
       )}
 
       {/* Desktop Helper overlay at bottom */}
-      <div className="hidden lg:flex absolute bottom-3 left-4 bg-slate-900/80 border border-stone-800 rounded-lg px-3 py-1.5 items-center gap-4 text-[11px] text-stone-300 font-mono pointer-events-none">
+      <div className="hidden lg:flex absolute bottom-3 left-4 bg-slate-900/85 border border-stone-800 rounded-lg px-3 py-1.5 items-center gap-4 text-[11px] text-stone-300 font-mono pointer-events-none shadow-lg">
         <span>WASD: Mozgás</span>
-        <span>Shift: Futás</span>
-        <span>Egér húzás: Nézelődés</span>
+        <span>Nyilak / IJKL: Kamera 360° & Döntés</span>
+        <span>Egér húzás / Görgő: Nézelődés & Zoom</span>
         <span>Szóköz: Ugrás</span>
-        <span>E: Gyűjtés / Beszélgetés</span>
-        <span>V: TPS/FPS Kamera</span>
+        <span>E: Gyűjtés</span>
+        <span>R: Kamera közép</span>
+        <span>V: TPS/FPS</span>
       </div>
 
       {/* Controls Help Modal */}
@@ -1042,10 +1254,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
                 <div>
                   <strong className="text-stone-100 block mb-0.5">Mobiltelefon / Érintőképernyő:</strong>
                   <p className="text-[11px] text-stone-400 leading-relaxed">
-                    • <strong>Bal oldali D-Pad (⬆️ ⬇️ ⬅️ ➡️)</strong>: Karakter valós mozgása a szigeten.<br />
-                    • <strong>⚡ Középső villám gomb</strong>: Sprint / Futás.<br />
-                    • <strong>Jobb oldali gombok</strong>: Ugrás, 🖐️ Gyűjtés/Interakció és ↺ ↻ kamerafordulás.<br />
-                    • <strong>Képernyő jobb fele</strong>: Szabad ujjhúzással is forgatható a kamera.
+                    • <strong>Bal oldali D-Pad (⬆️ ⬇️ ⬅️ ➡️)</strong>: Karakter valós mozgása a szigeten a kamera irányához viszonyítva.<br />
+                    • <strong>⚡ Villám gomb</strong>: Sprint / Gyors futás.<br />
+                    • <strong>Jobb oldali KAMERA vezérlő</strong>: 360° körbeforgatás (↺ / ↻), fel/le döntés (⬆️ / ⬇️), zoom (+ / -) és Közép reset.<br />
+                    • <strong>Érintőképernyős húzás</strong>: A képernyőn bárhol szabad ujjhúzással is körbeforgatható és fel-le dönthető a kamera! Kétujjas csípéssel zoomolható.
                   </p>
                 </div>
               </div>
@@ -1055,10 +1267,11 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
                 <div>
                   <strong className="text-stone-100 block mb-0.5">Windows / Asztali PC:</strong>
                   <p className="text-[11px] text-stone-400 leading-relaxed">
-                    • <strong>W, A, S, D</strong>: Mozgás | <strong>Shift</strong>: Futás<br />
-                    • <strong>Egér</strong>: Kattints a 3D képre az egér rögzítéséhez (Pointer Lock), és forgasd a kamerát.<br />
-                    • <strong>Szóköz</strong>: Ugrás | <strong>E</strong>: Gyűjtés és beszélgetés<br />
-                    • <strong>V</strong>: Váltás külső (TPS) és belső (FPS) nézet között.
+                    • <strong>W, A, S, D</strong>: Karakter mozgás | <strong>Shift</strong>: Futás<br />
+                    • <strong>Egér bal gomb húzás / Pointer Lock</strong>: 360° szabad körbeforgatás és fel-le nézés.<br />
+                    • <strong>Egérgörgő</strong>: Kamera távolság zoomolása.<br />
+                    • <strong>Nyílbillentyűk vagy I, J, K, L</strong>: Kamera körbeforgatás és fel/le döntés billentyűzetről.<br />
+                    • <strong>Szóköz</strong>: Ugrás | <strong>E</strong>: Gyűjtés / Beszélgetés | <strong>R</strong>: Kamera visszaállítása a karakter mögé.
                   </p>
                 </div>
               </div>
