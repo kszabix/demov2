@@ -1,21 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { GameState, ZoneId } from '../game/simulation';
+import { GameState } from '../game/simulation';
 import { sound } from '../utils/audio';
 import {
   Compass,
   Eye,
   Maximize2,
   Minimize2,
-  Footprints,
   Sparkles,
-  Flame,
-  Volume2,
-  VolumeX,
   Smartphone,
   Monitor,
   HelpCircle,
   X,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  RotateCcw,
+  RotateCw,
+  Zap,
+  Hand,
+  ChevronUp,
 } from 'lucide-react';
 
 interface ThreeDViewProps {
@@ -23,6 +28,14 @@ interface ThreeDViewProps {
   onUpdateInventory: (itemId: string, amount: number) => void;
   onLogEvent: (textHu: string) => void;
   onSwitchToTab: (tab: 'map' | 'base' | 'companion' | 'escape' | 'ruins' | 'studio') => void;
+}
+
+interface InteractiveProp {
+  id: string;
+  nameHu: string;
+  mesh: THREE.Object3D;
+  action: () => void;
+  type: 'shelter' | 'fire' | 'plane' | 'ruins' | 'item';
 }
 
 export const ThreeDView: React.FC<ThreeDViewProps> = ({
@@ -36,38 +49,33 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   const [cameraMode, setCameraMode] = useState<'tps' | 'fps'>('tps');
   const [interactionPrompt, setInteractionPrompt] = useState<string | null>(null);
   const [controlsHelpOpen, setControlsHelpOpen] = useState<boolean>(false);
-  const [currentZoneName, setCurrentZoneName] = useState<string>('Partvidék (Tengerpart)');
+  const [currentZoneName, setCurrentZoneName] = useState<string>('Partvidék & Sekély Vizek');
+  
+  // Touch controls overlay toggle (enabled by default on all devices, toggleable)
+  const [showTouchControls, setShowTouchControls] = useState<boolean>(true);
 
-  // Touch joystick states for mobile phones
-  const joystickRef = useRef<{
-    active: boolean;
-    touchId: number | null;
-    startX: number;
-    startY: number;
-    deltaX: number;
-    deltaY: number;
+  // Virtual keys for touch D-Pad and on-screen controls
+  const virtualKeysRef = useRef<{
+    forward: boolean;
+    backward: boolean;
+    left: boolean;
+    right: boolean;
+    turnLeft: boolean;
+    turnRight: boolean;
+    jump: boolean;
+    sprint: boolean;
   }>({
-    active: false,
-    touchId: null,
-    startX: 0,
-    startY: 0,
-    deltaX: 0,
-    deltaY: 0,
+    forward: false,
+    backward: false,
+    left: false,
+    right: false,
+    turnLeft: false,
+    turnRight: false,
+    jump: false,
+    sprint: false,
   });
 
-  const touchLookRef = useRef<{
-    active: boolean;
-    touchId: number | null;
-    lastX: number;
-    lastY: number;
-  }>({
-    active: false,
-    touchId: null,
-    lastX: 0,
-    lastY: 0,
-  });
-
-  // Callbacks ref to avoid rebuilding WebGL scene on prop change
+  // Callbacks ref to avoid rebuilding WebGL scene on state changes
   const callbacksRef = useRef({
     onUpdateInventory,
     onLogEvent,
@@ -88,7 +96,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     // 1. Scene, Camera, Renderer
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0c1926);
-    scene.fog = new THREE.FogExp2(0x0c1926, 0.008);
+    scene.fog = new THREE.FogExp2(0x0c1926, 0.0075);
 
     const camera = new THREE.PerspectiveCamera(
       60,
@@ -99,21 +107,20 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
+    renderer.toneMappingExposure = 1.15;
     container.appendChild(renderer.domElement);
 
-    // 2. Lighting (Warm sun + Cool sky hemisphere)
-    const hemiLight = new THREE.HemisphereLight(0x4dc5d8, 0x1a3826, 0.85);
+    // 2. Lighting (Warm sun + Sky hemisphere)
+    const hemiLight = new THREE.HemisphereLight(0x52d6ec, 0x1a3826, 0.9);
     scene.add(hemiLight);
 
     const sunLight = new THREE.DirectionalLight(0xffeedd, 1.4);
     sunLight.position.set(60, 100, 40);
     scene.add(sunLight);
 
-    // Ambient night/day tinting
-    const ambientLight = new THREE.AmbientLight(0x223344, 0.4);
+    const ambientLight = new THREE.AmbientLight(0x223344, 0.45);
     scene.add(ambientLight);
 
     // 3. Procedural Island Terrain Generation
@@ -128,14 +135,12 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       const z = posAttr.getZ(i);
       const distFromCenter = Math.sqrt(x * x + z * z);
 
-      // Island height calculation
       let h = 0;
       if (distFromCenter < 120) {
-        // Island landmass dome
         const factor = Math.cos((distFromCenter / 120) * (Math.PI / 2));
         h = Math.pow(factor, 1.4) * 28;
 
-        // Mountain / Volcano peak in North (z < -30)
+        // Northern volcanic mountain
         if (z < -20 && Math.abs(x) < 50) {
           const mDist = Math.sqrt(x * x + (z + 65) * (z + 65));
           if (mDist < 45) {
@@ -143,16 +148,14 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           }
         }
 
-        // River carving
+        // River valley
         const riverPath = Math.sin(z * 0.05) * 12;
         if (Math.abs(x - riverPath) < 7 && z > -30) {
           h -= 4;
         }
 
-        // Natural noise ripples
         h += Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2.2;
       } else {
-        // Deep underwater shelf
         h = -8 - (distFromCenter - 120) * 0.15;
       }
 
@@ -160,9 +163,8 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     }
     terrainGeo.computeVertexNormals();
 
-    // Terrain material with vertex colors / biomes
     const terrainMat = new THREE.MeshStandardMaterial({
-      color: 0x2e6b3e, // tropical grass green
+      color: 0x2e6b3e,
       roughness: 0.85,
       metalness: 0.1,
       flatShading: true,
@@ -184,169 +186,200 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     waterMesh.position.y = 1.2;
     scene.add(waterMesh);
 
-    // Function to calculate ground height at any (x, z)
+    // Height function helper
     const getGroundHeight = (x: number, z: number): number => {
-      const dist = Math.sqrt(x * x + z * z);
-      if (dist > 120) return -2;
-      let h = Math.pow(Math.cos((dist / 120) * (Math.PI / 2)), 1.4) * 28;
+      const distFromCenter = Math.sqrt(x * x + z * z);
+      if (distFromCenter >= 120) return 0;
+      const factor = Math.cos((distFromCenter / 120) * (Math.PI / 2));
+      let h = Math.pow(factor, 1.4) * 28;
       if (z < -20 && Math.abs(x) < 50) {
         const mDist = Math.sqrt(x * x + (z + 65) * (z + 65));
-        if (mDist < 45) h += Math.cos((mDist / 45) * (Math.PI / 2)) * 38;
+        if (mDist < 45) {
+          h += Math.cos((mDist / 45) * (Math.PI / 2)) * 38;
+        }
       }
-      return h;
+      h += Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2.2;
+      return Math.max(0.5, h);
     };
 
-    // 5. Stilt Base Camp on the Beach (x: 20, z: 75)
-    const baseGroup = new THREE.Group();
-    baseGroup.position.set(20, getGroundHeight(20, 75), 75);
+    const interactables: InteractiveProp[] = [];
 
-    // Stilt legs
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e4726, roughness: 0.8 });
-    const legGeo = new THREE.CylinderGeometry(0.2, 0.2, 5, 6);
-    [[-3, -3], [3, -3], [-3, 3], [3, 3]].forEach(([lx, lz]) => {
-      const leg = new THREE.Mesh(legGeo, woodMat);
-      leg.position.set(lx, 2.5, lz);
-      baseGroup.add(leg);
+    // 5. Stilt Base Shelter & Campfire (Coast: x: 18, z: 75)
+    const baseGroup = new THREE.Group();
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e4a28, roughness: 0.9 });
+    const thatchMat = new THREE.MeshStandardMaterial({ color: 0x99793d, roughness: 0.95 });
+
+    const platform = new THREE.Mesh(new THREE.BoxGeometry(7, 0.4, 7), woodMat);
+    platform.position.y = 2.2;
+    baseGroup.add(platform);
+
+    // 4 Stilt Legs
+    [-3, 3].forEach((sx) => {
+      [-3, 3].forEach((sz) => {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 4.5, 6), woodMat);
+        leg.position.set(sx, 0, sz);
+        baseGroup.add(leg);
+      });
     });
 
-    // Floor deck
-    const deckGeo = new THREE.BoxGeometry(8, 0.4, 8);
-    const deck = new THREE.Mesh(deckGeo, woodMat);
-    deck.position.y = 4.8;
-    baseGroup.add(deck);
-
-    // Thatched Roof
-    const roofGeo = new THREE.ConeGeometry(6, 3.5, 4);
-    roofGeo.rotateY(Math.PI / 4);
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0xa88434, roughness: 0.9 });
-    const roof = new THREE.Mesh(roofGeo, roofMat);
-    roof.position.y = 8;
+    // Thatch roof
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(5.2, 2.5, 4), thatchMat);
+    roof.position.y = 4.8;
+    roof.rotateY(Math.PI / 4);
     baseGroup.add(roof);
 
-    // Campfire with point light
-    const firePointLight = new THREE.PointLight(0xff8822, 2.5, 25);
-    firePointLight.position.set(6, 1.2, 0);
-    baseGroup.add(firePointLight);
-
-    const firePitGeo = new THREE.DodecahedronGeometry(0.8);
-    const firePitMat = new THREE.MeshStandardMaterial({ color: 0xff4400, emissive: 0xff3300, emissiveIntensity: 0.8 });
-    const firePit = new THREE.Mesh(firePitGeo, firePitMat);
-    firePit.position.set(6, 0.5, 0);
-    baseGroup.add(firePit);
-
+    baseGroup.position.set(18, getGroundHeight(18, 75), 75);
     scene.add(baseGroup);
 
-    // 6. Crashed Airplane in Tropical Rainforest (x: -25, z: 0)
-    const planeGroup = new THREE.Group();
-    const planeY = getGroundHeight(-25, 0);
-    planeGroup.position.set(-25, planeY + 2, 0);
-    planeGroup.rotation.set(0.15, 0.8, -0.2); // Tilted crash angle
+    interactables.push({
+      id: 'shelter',
+      nameHu: 'Cölöpös Bázis Menedék',
+      mesh: baseGroup,
+      type: 'shelter',
+      action: () => callbacksRef.current.onSwitchToTab('base'),
+    });
 
-    const aluminumMat = new THREE.MeshStandardMaterial({
-      color: 0x9fa8a3,
+    // Campfire with animated pointlight
+    const fireGroup = new THREE.Group();
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.9 });
+    for (let r = 0; r < 8; r++) {
+      const angle = (r / 8) * Math.PI * 2;
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.35), rockMat);
+      rock.position.set(Math.cos(angle) * 1.1, 0.2, Math.sin(angle) * 1.1);
+      fireGroup.add(rock);
+    }
+    const firePointLight = new THREE.PointLight(0xff6a00, 2.6, 18);
+    firePointLight.position.set(0, 1.0, 0);
+    fireGroup.add(firePointLight);
+
+    fireGroup.position.set(12, getGroundHeight(12, 73), 73);
+    scene.add(fireGroup);
+
+    interactables.push({
+      id: 'campfire',
+      nameHu: 'Túlélő Tábortűz',
+      mesh: fireGroup,
+      type: 'fire',
+      action: () => {
+        callbacksRef.current.onUpdateInventory('driftwood', -1);
+        callbacksRef.current.onLogEvent('Megraktad a tábortüzet száraz fával (+60 perc meleg).');
+        sound.playCraftSuccess();
+      },
+    });
+
+    // 6. Crashed Twin-Engine Cargo Plane (Jungle: x: -5, z: 12)
+    const planeGroup = new THREE.Group();
+    const metalMat = new THREE.MeshStandardMaterial({
+      color: 0x8a9ba8,
       metalness: 0.65,
       roughness: 0.35,
     });
-    // Fuselage
-    const fuselageGeo = new THREE.CylinderGeometry(2.4, 2.1, 24, 12);
-    fuselageGeo.rotateZ(Math.PI / 2);
-    const fuselage = new THREE.Mesh(fuselageGeo, aluminumMat);
+    const stripeMat = new THREE.MeshStandardMaterial({ color: 0xb83232 });
+
+    const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.4, 18, 12), metalMat);
+    fuselage.rotateZ(Math.PI / 2);
+    fuselage.rotateX(0.18);
     planeGroup.add(fuselage);
 
-    // Wings
-    const wingGeo = new THREE.BoxGeometry(28, 0.4, 4.5);
-    const wings = new THREE.Mesh(wingGeo, aluminumMat);
-    wings.position.set(0, 0.5, 0);
+    const stripe = new THREE.Mesh(new THREE.CylinderGeometry(1.62, 1.62, 2, 12), stripeMat);
+    stripe.rotateZ(Math.PI / 2);
+    stripe.position.x = 2;
+    planeGroup.add(stripe);
+
+    const wings = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.25, 26), metalMat);
+    wings.position.set(0, 0.4, 0);
     planeGroup.add(wings);
 
-    // Broken tail fin
-    const tailGeo = new THREE.BoxGeometry(1, 6, 4);
-    const tail = new THREE.Mesh(tailGeo, aluminumMat);
-    tail.position.set(-10, 3, 0);
-    tail.rotation.z = -0.3;
-    planeGroup.add(tail);
+    // Left Engine Cowling
+    const engineGeo = new THREE.CylinderGeometry(0.8, 0.8, 2.5, 8);
+    engineGeo.rotateZ(Math.PI / 2);
+    const engineL = new THREE.Mesh(engineGeo, metalMat);
+    engineL.position.set(0, 0.1, -6);
+    planeGroup.add(engineL);
 
+    // Tail fin
+    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(2.8, 4, 0.2), metalMat);
+    tailFin.position.set(-8, 2.2, 0);
+    planeGroup.add(tailFin);
+
+    planeGroup.position.set(-5, getGroundHeight(-5, 12) + 1.2, 12);
+    planeGroup.rotateY(0.6);
     scene.add(planeGroup);
 
-    // 7. Ancient Ruins Pillars & Portal (x: 45, z: -40)
-    const ruinsGroup = new THREE.Group();
-    const ruinsY = getGroundHeight(45, -40);
-    ruinsGroup.position.set(45, ruinsY, -40);
-
-    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x3d434d, roughness: 0.9 });
-    const runeMat = new THREE.MeshStandardMaterial({ color: 0x00f2ff, emissive: 0x00f2ff, emissiveIntensity: 0.9 });
-    const pillarGeo = new THREE.BoxGeometry(2.5, 14, 2.5);
-
-    [[-6, 0], [6, 0], [-6, -10], [6, -10]].forEach(([px, pz]) => {
-      const pillar = new THREE.Mesh(pillarGeo, stoneMat);
-      pillar.position.set(px, 7, pz);
-      ruinsGroup.add(pillar);
-
-      // Glowing crystal band
-      const bandGeo = new THREE.BoxGeometry(2.7, 1, 2.7);
-      const band = new THREE.Mesh(bandGeo, runeMat);
-      band.position.set(px, 9, pz);
-      ruinsGroup.add(band);
+    interactables.push({
+      id: 'plane',
+      nameHu: 'Lezuhant Teherszállító Repülőgép Roncs',
+      mesh: planeGroup,
+      type: 'plane',
+      action: () => callbacksRef.current.onSwitchToTab('escape'),
     });
 
-    // Lintels
-    const lintelGeo = new THREE.BoxGeometry(16, 2, 3);
-    const lintel = new THREE.Mesh(lintelGeo, stoneMat);
-    lintel.position.set(0, 14.5, 0);
-    ruinsGroup.add(lintel);
+    // 7. Ancient Ruins Monolith & Stone Portal (North-East: x: 45, z: -25)
+    const ruinsGroup = new THREE.Group();
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0x485058, roughness: 0.95 });
+    const runeGlowMat = new THREE.MeshStandardMaterial({
+      color: 0x38ef7d,
+      emissive: 0x11998e,
+      emissiveIntensity: 0.7,
+      roughness: 0.2,
+    });
 
+    const pillarL = new THREE.Mesh(new THREE.BoxGeometry(1.8, 9, 1.8), stoneMat);
+    pillarL.position.set(-3.5, 4.5, 0);
+    const pillarR = new THREE.Mesh(new THREE.BoxGeometry(1.8, 9, 1.8), stoneMat);
+    pillarR.position.set(3.5, 4.5, 0);
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(10, 1.8, 2.2), stoneMat);
+    lintel.position.set(0, 9.2, 0);
+    const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(1.2), runeGlowMat);
+    crystal.position.set(0, 5, 0);
+
+    ruinsGroup.add(pillarL, pillarR, lintel, crystal);
+    ruinsGroup.position.set(45, getGroundHeight(45, -25), -25);
     scene.add(ruinsGroup);
 
-    // 8. Procedural Palm Trees & Foliage
-    const palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x543d2b, roughness: 0.9 });
-    const palmLeafMat = new THREE.MeshStandardMaterial({ color: 0x1f7a37, roughness: 0.6, side: THREE.DoubleSide });
+    interactables.push({
+      id: 'ruins',
+      nameHu: 'Ősi Romok Misztikus Kőkapuja',
+      mesh: ruinsGroup,
+      type: 'ruins',
+      action: () => callbacksRef.current.onSwitchToTab('ruins'),
+    });
 
-    const createPalm = (x: number, z: number, scale = 1) => {
-      const pY = getGroundHeight(x, z);
-      if (pY < 1.5) return; // don't spawn deep in ocean
+    // 8. Palm Trees Scatter
+    const palmPositions = [
+      { x: 10, z: 65 },
+      { x: 26, z: 70 },
+      { x: 30, z: 60 },
+      { x: 5, z: 50 },
+      { x: -15, z: 65 },
+      { x: -25, z: 50 },
+      { x: 40, z: 45 },
+      { x: -8, z: 30 },
+      { x: 15, z: 20 },
+      { x: -30, z: 20 },
+    ];
+
+    const trunkGeo = new THREE.CylinderGeometry(0.25, 0.45, 6, 6);
+    const frondGeo = new THREE.ConeGeometry(3, 1.4, 5);
+    const leafMat = new THREE.MeshStandardMaterial({ color: 0x1b5e20, roughness: 0.85 });
+
+    palmPositions.forEach((p) => {
       const tree = new THREE.Group();
-      tree.position.set(x, pY, z);
-      tree.scale.setScalar(scale);
+      const trunk = new THREE.Mesh(trunkGeo, woodMat);
+      trunk.position.y = 3;
+      trunk.rotateZ(0.08);
 
-      // Trunk with gentle curve
-      const trunkGeo = new THREE.CylinderGeometry(0.35, 0.55, 9, 6);
-      trunkGeo.translate(0, 4.5, 0);
-      const trunk = new THREE.Mesh(trunkGeo, palmTrunkMat);
-      trunk.rotation.z = (Math.random() - 0.5) * 0.25;
-      tree.add(trunk);
+      const fronds = new THREE.Mesh(frondGeo, leafMat);
+      fronds.position.y = 6;
+      tree.add(trunk, fronds);
 
-      // Leaves
-      const leafGeo = new THREE.ConeGeometry(4.5, 1.2, 5);
-      leafGeo.rotateX(Math.PI);
-      const leaves = new THREE.Mesh(leafGeo, palmLeafMat);
-      leaves.position.set(0, 9.5, 0);
-      tree.add(leaves);
-
+      tree.position.set(p.x, getGroundHeight(p.x, p.z), p.z);
       scene.add(tree);
-    };
+    });
 
-    // Cluster palms along coastline and around jungle
-    for (let i = 0; i < 45; i++) {
-      const angle = (i / 45) * Math.PI * 2;
-      const radius = 65 + (Math.sin(i * 3) * 20);
-      const px = Math.cos(angle) * radius;
-      const pz = Math.sin(angle) * radius;
-      createPalm(px, pz, 0.8 + Math.random() * 0.5);
-    }
-
-    // 9. Interactive Pickup Objects in 3D
-    interface InteractiveProp {
-      id: string;
-      nameHu: string;
-      mesh: THREE.Mesh;
-      type: 'item' | 'station';
-      action: () => void;
-    }
-    const interactables: InteractiveProp[] = [];
-
-    // Driftwood pickups on the beach
-    const driftwoodMat = new THREE.MeshStandardMaterial({ color: 0x735c49, roughness: 0.85 });
-    const logGeo = new THREE.CylinderGeometry(0.25, 0.3, 3, 5);
+    // 9. Collectible Driftwood Logs on Beach
+    const driftwoodMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.9 });
+    const logGeo = new THREE.CylinderGeometry(0.2, 0.22, 2.5, 6);
     logGeo.rotateZ(Math.PI / 2);
 
     [
@@ -367,12 +400,12 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           sound.playCraftSuccess();
           callbacksRef.current.onUpdateInventory('driftwood', 3);
           callbacksRef.current.onLogEvent('Uszadékfa rönköt gyűjtöttél a tengerparti homokból (+3 Fa).');
-          log.position.y = -100; // hide
+          log.position.y = -100;
         },
       });
     });
 
-    // 10. Player Avatar and Companion (Maya Vance) in 3D
+    // 10. Companion (Maya Vance) 3D Avatar
     const companionGroup = new THREE.Group();
     const compMat = new THREE.MeshStandardMaterial({ color: 0x00b4d8 });
     const compHeadMat = new THREE.MeshStandardMaterial({ color: 0xffd166 });
@@ -384,17 +417,51 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     companionGroup.position.set(16, getGroundHeight(16, 73), 73);
     scene.add(companionGroup);
 
-    // Player initial position (near beach shelter)
+    // 11. PLAYER 3D AVATAR (Survivor Character)
+    const playerGroup = new THREE.Group();
+    const shirtMat = new THREE.MeshStandardMaterial({ color: 0x2e5c54, roughness: 0.8 });
+    const pantsMat = new THREE.MeshStandardMaterial({ color: 0x4a3b2c, roughness: 0.9 });
+    const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0ac69, roughness: 0.7 });
+    const hairMat = new THREE.MeshStandardMaterial({ color: 0x20150f, roughness: 0.9 });
+    const packMat = new THREE.MeshStandardMaterial({ color: 0x7a4920, roughness: 0.8 });
+
+    const playerTorso = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.32, 0.75, 8), shirtMat);
+    playerTorso.position.y = 1.1;
+
+    const playerHead = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), skinMat);
+    playerHead.position.y = 1.7;
+
+    const playerHair = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.25, 6), hairMat);
+    playerHair.position.set(0, 1.88, -0.05);
+    playerHair.rotateX(0.2);
+
+    const playerBackpack = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.45, 0.22), packMat);
+    playerBackpack.position.set(0, 1.15, 0.26);
+
+    const leftLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.75, 6), pantsMat);
+    leftLeg.position.set(-0.16, 0.45, 0);
+    const rightLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.75, 6), pantsMat);
+    rightLeg.position.set(0.16, 0.45, 0);
+
+    const leftArm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.65, 6), shirtMat);
+    leftArm.position.set(-0.45, 1.1, 0);
+    const rightArm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.65, 6), shirtMat);
+    rightArm.position.set(0.45, 1.1, 0);
+
+    playerGroup.add(playerTorso, playerHead, playerHair, playerBackpack, leftLeg, rightLeg, leftArm, rightArm);
+    scene.add(playerGroup);
+
+    // Player position state
     const player = {
       pos: new THREE.Vector3(15, getGroundHeight(15, 76) + 1.6, 76),
       velocity: new THREE.Vector3(),
       yaw: 0,
       pitch: 0,
       isGrounded: true,
-      speed: 12,
+      speed: 13,
     };
 
-    // 11. Controls & Input Listeners (Keyboard + Mouse + Touch)
+    // 12. Input Listeners (Keyboard + Mouse + Touch)
     const keys: Record<string, boolean> = {};
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -404,7 +471,6 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         sound.playClick();
       }
       if (e.code === 'KeyE') {
-        // Trigger current interactive prop
         if (nearestPropRef.current) {
           nearestPropRef.current.action();
         }
@@ -417,7 +483,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    // Pointer lock / mouse look for desktop
+    // Desktop pointer lock mouse look
     const onMouseMove = (e: MouseEvent) => {
       if (document.pointerLockElement === container) {
         player.yaw -= e.movementX * 0.0025;
@@ -427,13 +493,61 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     window.addEventListener('mousemove', onMouseMove);
 
     const onContainerClick = () => {
-      if (document.pointerLockElement !== container && window.innerWidth > 768) {
+      if (document.pointerLockElement !== container && window.innerWidth > 900) {
         container.requestPointerLock?.();
       }
     };
     container.addEventListener('click', onContainerClick);
 
-    // 12. Main 3D Animation Loop
+    // Touch look handling on canvas
+    let touchLook = { x: 0, y: 0, active: false, id: -1 };
+
+    const onCanvasTouchStart = (e: TouchEvent) => {
+      const rect = container.getBoundingClientRect();
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        // If touch is on right 55% of canvas, treat as camera swipe
+        if (t.clientX - rect.left > rect.width * 0.45 && !touchLook.active) {
+          touchLook = { x: t.clientX, y: t.clientY, active: true, id: t.identifier };
+          break;
+        }
+      }
+    };
+
+    const onCanvasTouchMove = (e: TouchEvent) => {
+      if (!touchLook.active) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === touchLook.id) {
+          const dx = t.clientX - touchLook.x;
+          const dy = t.clientY - touchLook.y;
+          touchLook.x = t.clientX;
+          touchLook.y = t.clientY;
+
+          player.yaw -= dx * 0.0055;
+          player.pitch = Math.max(-1.1, Math.min(1.1, player.pitch - dy * 0.0055));
+          e.preventDefault();
+          break;
+        }
+      }
+    };
+
+    const onCanvasTouchEnd = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === touchLook.id) {
+          touchLook.active = false;
+          touchLook.id = -1;
+          break;
+        }
+      }
+    };
+
+    container.addEventListener('touchstart', onCanvasTouchStart, { passive: false });
+    container.addEventListener('touchmove', onCanvasTouchMove, { passive: false });
+    container.addEventListener('touchend', onCanvasTouchEnd);
+    container.addEventListener('touchcancel', onCanvasTouchEnd);
+
+    // 13. Main 3D Animation Loop
     let lastTime = performance.now();
     let animId: number;
     const nearestPropRef: { current: InteractiveProp | null } = { current: null };
@@ -447,37 +561,47 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       waterMat.opacity = 0.8 + Math.sin(time * 0.002) * 0.06;
       firePointLight.intensity = 2.2 + Math.sin(time * 0.02) * 0.5 + Math.cos(time * 0.035) * 0.3;
 
-      // Companion movement animation
-      companionGroup.position.y = getGroundHeight(companionGroup.position.x, companionGroup.position.z) + Math.sin(time * 0.003) * 0.1;
+      // Companion bob
+      companionGroup.position.y = getGroundHeight(companionGroup.position.x, companionGroup.position.z) + Math.sin(time * 0.003) * 0.08;
+
+      // Crystal spin
+      crystal.rotation.y = time * 0.001;
+      crystal.rotation.x = Math.sin(time * 0.0015) * 0.3;
 
       // Process input movement vector
       const moveVec = new THREE.Vector3();
+      const vKeys = virtualKeysRef.current;
+      const isSprinting = keys['ShiftLeft'] || keys['ShiftRight'] || vKeys.sprint;
+      const currentSpeed = isSprinting ? player.speed * 1.55 : player.speed;
 
-      // Keyboard input
-      if (keys['KeyW'] || keys['ArrowUp']) moveVec.z -= 1;
-      if (keys['KeyS'] || keys['ArrowDown']) moveVec.z += 1;
-      if (keys['KeyA'] || keys['ArrowLeft']) moveVec.x -= 1;
-      if (keys['KeyD'] || keys['ArrowRight']) moveVec.x += 1;
+      // Keyboard & Virtual D-Pad Input
+      if (keys['KeyW'] || keys['ArrowUp'] || vKeys.forward) moveVec.z -= 1;
+      if (keys['KeyS'] || keys['ArrowDown'] || vKeys.backward) moveVec.z += 1;
+      if (keys['KeyA'] || keys['ArrowLeft'] || vKeys.left) moveVec.x -= 1;
+      if (keys['KeyD'] || keys['ArrowRight'] || vKeys.right) moveVec.x += 1;
 
-      // Touch joystick input
-      if (joystickRef.current.active) {
-        moveVec.x += joystickRef.current.deltaX;
-        moveVec.z += joystickRef.current.deltaY;
+      // Smooth touch turn buttons (↺ / ↻)
+      if (vKeys.turnLeft) {
+        player.yaw += 2.4 * dt;
+      }
+      if (vKeys.turnRight) {
+        player.yaw -= 2.4 * dt;
       }
 
-      if (moveVec.lengthSq() > 0) {
+      const isMoving = moveVec.lengthSq() > 0.001;
+
+      if (isMoving) {
         moveVec.normalize();
-        // Rotate move vector by player yaw
         const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
         const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
 
         const delta = forward.multiplyScalar(-moveVec.z).add(right.multiplyScalar(moveVec.x));
-        player.pos.addScaledVector(delta, player.speed * dt);
+        player.pos.addScaledVector(delta, currentSpeed * dt);
       }
 
       // Jump
-      if (keys['Space'] && player.isGrounded) {
-        player.velocity.y = 8;
+      if ((keys['Space'] || vKeys.jump) && player.isGrounded) {
+        player.velocity.y = 8.5;
         player.isGrounded = false;
         sound.playClick();
       }
@@ -500,6 +624,27 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         sound.playDangerWarning();
       }
 
+      // Update Survivor 3D Character Model
+      playerGroup.position.set(player.pos.x, player.pos.y - 1.8, player.pos.z);
+      playerGroup.rotation.y = player.yaw + Math.PI;
+      playerGroup.visible = cameraMode === 'tps';
+
+      // Limb swing walking animation
+      if (isMoving) {
+        const walkCycle = time * 0.012 * (isSprinting ? 1.6 : 1.1);
+        leftLeg.rotation.x = Math.sin(walkCycle) * 0.55;
+        rightLeg.rotation.x = -Math.sin(walkCycle) * 0.55;
+        leftArm.rotation.x = -Math.sin(walkCycle) * 0.5;
+        rightArm.rotation.x = Math.sin(walkCycle) * 0.5;
+        playerTorso.position.y = 1.1 + Math.abs(Math.sin(walkCycle)) * 0.05;
+      } else {
+        leftLeg.rotation.x = 0;
+        rightLeg.rotation.x = 0;
+        leftArm.rotation.x = 0;
+        rightArm.rotation.x = 0;
+        playerTorso.position.y = 1.1;
+      }
+
       // Detect active zone by coordinates
       if (player.pos.z < -30 && Math.abs(player.pos.x) < 55) {
         setCurrentZoneName('Kihűlt Vulkán (Északi Magaslat)');
@@ -515,7 +660,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
       // Check proximity to interactables
       let closest: InteractiveProp | null = null;
-      let closestDist = 4.5;
+      let closestDist = 5.0;
       for (const item of interactables) {
         const d = player.pos.distanceTo(item.mesh.position);
         if (d < closestDist) {
@@ -526,10 +671,17 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
       // Proximity to Companion
       const distToComp = player.pos.distanceTo(companionGroup.position);
-      if (distToComp < 4) {
-        setInteractionPrompt(`Beszélj Maya Vance-szel [E gomb / Érintés]`);
+      if (distToComp < 4.5) {
+        setInteractionPrompt(`Beszélj Maya Vance-szel [🖐️ Gyűjtés / E]`);
+        nearestPropRef.current = {
+          id: 'companion',
+          nameHu: 'Maya Vance',
+          mesh: companionGroup,
+          type: 'item',
+          action: () => callbacksRef.current.onSwitchToTab('companion'),
+        };
       } else if (closest) {
-        setInteractionPrompt(`Gyűjtés: ${closest.nameHu} [E gomb / Érintés]`);
+        setInteractionPrompt(`Interakció: ${closest.nameHu} [🖐️ Gyűjtés / E]`);
         nearestPropRef.current = closest;
       } else {
         setInteractionPrompt(null);
@@ -547,7 +699,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           player.yaw
         );
         camera.position.copy(player.pos).add(camOffset);
-        const lookTarget = player.pos.clone().add(new THREE.Vector3(0, 1.2, 0));
+        const lookTarget = player.pos.clone().add(new THREE.Vector3(0, 0.9, 0));
         camera.lookAt(lookTarget);
       }
 
@@ -572,6 +724,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('resize', onResize);
       container.removeEventListener('click', onContainerClick);
+      container.removeEventListener('touchstart', onCanvasTouchStart);
+      container.removeEventListener('touchmove', onCanvasTouchMove);
+      container.removeEventListener('touchend', onCanvasTouchEnd);
+      container.removeEventListener('touchcancel', onCanvasTouchEnd);
       renderer.dispose();
       terrainGeo.dispose();
       terrainMat.dispose();
@@ -583,70 +739,58 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     };
   }, [cameraMode]);
 
-  // Touch handlers for mobile joystick (Left Screen)
-  const handleJoystickTouchStart = (e: React.TouchEvent) => {
-    const touch = e.changedTouches[0];
-    joystickRef.current = {
-      active: true,
-      touchId: touch.identifier,
-      startX: touch.clientX,
-      startY: touch.clientY,
-      deltaX: 0,
-      deltaY: 0,
-    };
-  };
-
-  const handleJoystickTouchMove = (e: React.TouchEvent) => {
-    if (!joystickRef.current.active) return;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i];
-      if (t.identifier === joystickRef.current.touchId) {
-        const dx = (t.clientX - joystickRef.current.startX) / 40;
-        const dy = (t.clientY - joystickRef.current.startY) / 40;
-        joystickRef.current.deltaX = Math.max(-1, Math.min(1, dx));
-        joystickRef.current.deltaY = Math.max(-1, Math.min(1, dy));
-      }
-    }
-  };
-
-  const handleJoystickTouchEnd = (e: React.TouchEvent) => {
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === joystickRef.current.touchId) {
-        joystickRef.current.active = false;
-        joystickRef.current.deltaX = 0;
-        joystickRef.current.deltaY = 0;
-      }
-    }
+  // Touch button action trigger
+  const handleTriggerAction = () => {
+    sound.playClick();
+    window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' }));
   };
 
   return (
     <div
-      className={`relative w-full rounded-xl overflow-hidden bg-slate-950 border border-emerald-900/60 shadow-2xl flex flex-col ${
-        isFullscreen ? 'fixed inset-0 z-50 rounded-none border-none h-screen' : 'aspect-[16/10] min-h-[520px]'
+      className={`relative w-full rounded-xl overflow-hidden bg-slate-950 border border-emerald-900/60 shadow-2xl flex flex-col select-none ${
+        isFullscreen ? 'fixed inset-0 z-50 rounded-none border-none h-screen' : 'aspect-[16/10] min-h-[540px]'
       }`}
     >
       {/* 3D WebGL Canvas Container */}
-      <div ref={containerRef} className="w-full h-full cursor-crosshair" />
+      <div
+        ref={containerRef}
+        className="w-full h-full cursor-crosshair touch-none"
+        style={{ touchAction: 'none' }}
+      />
 
       {/* Top 3D Status Overlay */}
-      <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none select-none">
-        <div className="bg-slate-900/90 border border-emerald-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2 pointer-events-auto backdrop-blur">
+      <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none">
+        <div className="bg-slate-900/90 border border-emerald-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2 pointer-events-auto backdrop-blur shadow-lg">
           <Compass className="w-4 h-4 text-emerald-400 animate-spin-slow" />
           <span className="text-xs font-bold text-stone-100">{currentZoneName}</span>
-          <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60">
-            3D WebGL Engine
+          <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60 hidden sm:inline">
+            3D WebGL
           </span>
         </div>
 
-        <div className="flex items-center gap-2 pointer-events-auto">
-          {/* Controls toggle button */}
+        <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
+          {/* Toggle Touch Controls button */}
+          <button
+            onClick={() => setShowTouchControls(!showTouchControls)}
+            className={`p-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition shadow ${
+              showTouchControls
+                ? 'bg-emerald-700 border-emerald-500 text-white'
+                : 'bg-slate-900/90 hover:bg-slate-800 border-stone-700 text-stone-300'
+            }`}
+            title="Érintővezérlő gombok megjelenítése / elrejtése"
+          >
+            <Smartphone className="w-4 h-4" />
+            <span className="hidden sm:inline">Vezérlő</span>
+          </button>
+
+          {/* Controls Help button */}
           <button
             onClick={() => setControlsHelpOpen(true)}
             className="p-2 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-stone-700 text-stone-300 text-xs font-semibold flex items-center gap-1.5 transition shadow"
             title="Irányítási Útmutató"
           >
             <HelpCircle className="w-4 h-4 text-amber-400" />
-            <span className="hidden sm:inline">Irányítás</span>
+            <span className="hidden sm:inline">Súgó</span>
           </button>
 
           {/* Camera TPS/FPS toggle */}
@@ -658,7 +802,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
             className="p-2 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-stone-700 text-stone-300 text-xs font-semibold flex items-center gap-1.5 transition shadow"
           >
             <Eye className="w-4 h-4 text-cyan-400" />
-            <span>{cameraMode === 'tps' ? 'TPS (Külső)' : 'FPS (Belső)'} [V]</span>
+            <span>{cameraMode === 'tps' ? 'TPS' : 'FPS'}</span>
           </button>
 
           {/* Fullscreen toggle */}
@@ -675,59 +819,198 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         </div>
       </div>
 
-      {/* Interactive Proximity Prompt */}
+      {/* Proximity Interaction Prompt */}
       {interactionPrompt && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 bg-slate-900/95 border-2 border-emerald-500 rounded-xl px-5 py-2.5 shadow-2xl flex items-center gap-3 animate-bounce select-none pointer-events-auto">
-          <Sparkles className="w-5 h-5 text-emerald-400 shrink-0" />
+        <div
+          onClick={handleTriggerAction}
+          className="absolute top-16 left-1/2 -translate-x-1/2 bg-slate-900/95 border-2 border-emerald-500 rounded-xl px-4 py-2 shadow-2xl flex items-center gap-2.5 animate-bounce pointer-events-auto cursor-pointer active:scale-95 transition"
+        >
+          <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
           <span className="text-xs font-bold text-white tracking-wide">{interactionPrompt}</span>
         </div>
       )}
 
-      {/* Mobile Touch Joystick (Left Area) & Action Buttons (Right Area) */}
-      <div className="absolute inset-x-0 bottom-3 px-4 flex items-end justify-between pointer-events-none md:hidden">
-        {/* Virtual Joystick */}
-        <div
-          onTouchStart={handleJoystickTouchStart}
-          onTouchMove={handleJoystickTouchMove}
-          onTouchEnd={handleJoystickTouchEnd}
-          className="w-28 h-28 rounded-full bg-slate-900/70 border-2 border-emerald-500/50 flex items-center justify-center pointer-events-auto touch-none"
-        >
-          <div className="w-12 h-12 rounded-full bg-emerald-500/60 shadow flex items-center justify-center text-[10px] font-bold text-slate-950">
-            Mozgás
+      {/* ON-SCREEN TACTILE MOBILE CONTROLLER HUD */}
+      {showTouchControls && (
+        <div className="absolute inset-x-0 bottom-2 px-3 flex items-end justify-between pointer-events-none">
+          {/* Left Side: Tactile Directional D-Pad */}
+          <div className="pointer-events-auto flex flex-col items-center select-none touch-none">
+            {/* Forward button */}
+            <button
+              onPointerDown={(e) => {
+                e.preventDefault();
+                virtualKeysRef.current.forward = true;
+              }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                virtualKeysRef.current.forward = false;
+              }}
+              onPointerLeave={() => {
+                virtualKeysRef.current.forward = false;
+              }}
+              className="w-14 h-14 bg-slate-900/90 active:bg-emerald-600 border-2 border-emerald-500/70 rounded-xl shadow-lg flex items-center justify-center text-emerald-300 active:text-white active:scale-95 transition"
+            >
+              <ArrowUp className="w-7 h-7" />
+            </button>
+
+            <div className="flex items-center gap-1.5 my-1.5">
+              {/* Left button */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.left = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.left = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.left = false;
+                }}
+                className="w-14 h-14 bg-slate-900/90 active:bg-emerald-600 border-2 border-emerald-500/70 rounded-xl shadow-lg flex items-center justify-center text-emerald-300 active:text-white active:scale-95 transition"
+              >
+                <ArrowLeft className="w-7 h-7" />
+              </button>
+
+              {/* Sprint / Turbo Center Button */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.sprint = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.sprint = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.sprint = false;
+                }}
+                className="w-12 h-12 bg-amber-950/80 active:bg-amber-500 border-2 border-amber-500/80 rounded-xl shadow-lg flex items-center justify-center text-amber-400 active:text-slate-950 active:scale-95 transition"
+                title="Sprint / Futás"
+              >
+                <Zap className="w-5 h-5" />
+              </button>
+
+              {/* Right button */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.right = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.right = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.right = false;
+                }}
+                className="w-14 h-14 bg-slate-900/90 active:bg-emerald-600 border-2 border-emerald-500/70 rounded-xl shadow-lg flex items-center justify-center text-emerald-300 active:text-white active:scale-95 transition"
+              >
+                <ArrowRight className="w-7 h-7" />
+              </button>
+            </div>
+
+            {/* Backward button */}
+            <button
+              onPointerDown={(e) => {
+                e.preventDefault();
+                virtualKeysRef.current.backward = true;
+              }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                virtualKeysRef.current.backward = false;
+              }}
+              onPointerLeave={() => {
+                virtualKeysRef.current.backward = false;
+              }}
+              className="w-14 h-14 bg-slate-900/90 active:bg-emerald-600 border-2 border-emerald-500/70 rounded-xl shadow-lg flex items-center justify-center text-emerald-300 active:text-white active:scale-95 transition"
+            >
+              <ArrowDown className="w-7 h-7" />
+            </button>
+          </div>
+
+          {/* Right Side: Camera Turning & Tactical Action Buttons */}
+          <div className="pointer-events-auto flex flex-col items-end gap-2 select-none touch-none">
+            {/* Camera rotation buttons row */}
+            <div className="flex items-center gap-2">
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.turnLeft = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.turnLeft = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.turnLeft = false;
+                }}
+                className="w-12 h-12 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-full shadow-lg flex items-center justify-center text-cyan-300 active:text-white active:scale-95 transition"
+                title="Kamera balra"
+              >
+                <RotateCcw className="w-5 h-5" />
+              </button>
+
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.turnRight = true;
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  virtualKeysRef.current.turnRight = false;
+                }}
+                onPointerLeave={() => {
+                  virtualKeysRef.current.turnRight = false;
+                }}
+                className="w-12 h-12 bg-slate-900/90 active:bg-cyan-600 border border-cyan-500/60 rounded-full shadow-lg flex items-center justify-center text-cyan-300 active:text-white active:scale-95 transition"
+                title="Kamera jobbra"
+              >
+                <RotateCw className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Jump Button */}
+            <button
+              onPointerDown={(e) => {
+                e.preventDefault();
+                virtualKeysRef.current.jump = true;
+              }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                virtualKeysRef.current.jump = false;
+              }}
+              onPointerLeave={() => {
+                virtualKeysRef.current.jump = false;
+              }}
+              className="w-14 h-14 bg-sky-950/90 active:bg-sky-500 border-2 border-sky-400 rounded-full shadow-xl flex items-center justify-center text-xs font-bold text-sky-200 active:text-slate-950 active:scale-95 transition"
+            >
+              <div className="flex flex-col items-center">
+                <ChevronUp className="w-5 h-5" />
+                <span className="text-[9px] font-bold">UGRÁS</span>
+              </div>
+            </button>
+
+            {/* Interact / Collect Button (E) */}
+            <button
+              onClick={handleTriggerAction}
+              className="w-16 h-16 bg-emerald-600 active:bg-emerald-400 border-2 border-emerald-300 rounded-full shadow-2xl flex flex-col items-center justify-center text-white active:scale-90 transition"
+            >
+              <Hand className="w-6 h-6 mb-0.5" />
+              <span className="text-[10px] font-black uppercase tracking-wider">Gyűjtés</span>
+            </button>
           </div>
         </div>
+      )}
 
-        {/* Action Buttons for Phone */}
-        <div className="flex flex-col gap-2 pointer-events-auto">
-          <button
-            onClick={() => {
-              sound.playClick();
-              setCameraMode(cameraMode === 'tps' ? 'fps' : 'tps');
-            }}
-            className="w-14 h-14 rounded-full bg-cyan-950/90 border-2 border-cyan-500 flex items-center justify-center text-xs font-bold text-cyan-200 shadow-lg"
-          >
-            Nézet
-          </button>
-
-          <button
-            onClick={() => {
-              // Trigger action
-              window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' }));
-            }}
-            className="w-16 h-16 rounded-full bg-emerald-600/95 border-2 border-emerald-400 flex items-center justify-center text-xs font-bold text-white shadow-xl active:scale-95 transition"
-          >
-            Gyűjtés (E)
-          </button>
-        </div>
-      </div>
-
-      {/* Desktop Quick Key Helper Overlay at Bottom */}
-      <div className="hidden md:flex absolute bottom-3 left-4 bg-slate-900/80 border border-stone-800 rounded-lg px-3 py-1.5 items-center gap-4 text-[11px] text-stone-300 font-mono pointer-events-none">
+      {/* Desktop Helper overlay at bottom */}
+      <div className="hidden lg:flex absolute bottom-3 left-4 bg-slate-900/80 border border-stone-800 rounded-lg px-3 py-1.5 items-center gap-4 text-[11px] text-stone-300 font-mono pointer-events-none">
         <span>WASD: Mozgás</span>
-        <span>Egér: Nézelődés</span>
+        <span>Shift: Futás</span>
+        <span>Egér húzás: Nézelődés</span>
         <span>Szóköz: Ugrás</span>
-        <span>E: Interakció / Gyűjtés</span>
-        <span>V: Kamera</span>
+        <span>E: Gyűjtés / Beszélgetés</span>
+        <span>V: TPS/FPS Kamera</span>
       </div>
 
       {/* Controls Help Modal */}
@@ -755,21 +1038,27 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
             <div className="space-y-3 text-xs text-stone-300">
               <div className="bg-stone-950 p-3 rounded-lg border border-stone-800 flex items-center gap-3">
-                <Monitor className="w-6 h-6 text-cyan-400 shrink-0" />
+                <Smartphone className="w-6 h-6 text-emerald-400 shrink-0" />
                 <div>
-                  <strong className="text-stone-100 block mb-0.5">Windows / Asztali gép:</strong>
-                  <p className="text-[11px] text-stone-400">
-                    Kattints a 3D képre az egér rögzítéséhez (Pointer Lock). <strong>WASD</strong> vagy nyílbillentyűkkel sétálhatsz, az <strong>egérrel</strong> nézelődhetsz, <strong>Szóközzel</strong> ugorhatsz, <strong>E</strong> billentyűvel gyűjthetsz fát és beszélhetsz Mayával, a <strong>V</strong> billentyűvel pedig válthatsz külső (TPS) és belső (FPS) nézet között.
+                  <strong className="text-stone-100 block mb-0.5">Mobiltelefon / Érintőképernyő:</strong>
+                  <p className="text-[11px] text-stone-400 leading-relaxed">
+                    • <strong>Bal oldali D-Pad (⬆️ ⬇️ ⬅️ ➡️)</strong>: Karakter valós mozgása a szigeten.<br />
+                    • <strong>⚡ Középső villám gomb</strong>: Sprint / Futás.<br />
+                    • <strong>Jobb oldali gombok</strong>: Ugrás, 🖐️ Gyűjtés/Interakció és ↺ ↻ kamerafordulás.<br />
+                    • <strong>Képernyő jobb fele</strong>: Szabad ujjhúzással is forgatható a kamera.
                   </p>
                 </div>
               </div>
 
               <div className="bg-stone-950 p-3 rounded-lg border border-stone-800 flex items-center gap-3">
-                <Smartphone className="w-6 h-6 text-emerald-400 shrink-0" />
+                <Monitor className="w-6 h-6 text-cyan-400 shrink-0" />
                 <div>
-                  <strong className="text-stone-100 block mb-0.5">Telefon (Mobil böngésző):</strong>
-                  <p className="text-[11px] text-stone-400">
-                    A képernyő bal alsó sarkában található virtuális joystickkal mozoghatsz, a jobb oldali gombokkal pedig interakcióba léphetsz és nézetet válthatsz. Nincs szükség semmilyen app letöltésére!
+                  <strong className="text-stone-100 block mb-0.5">Windows / Asztali PC:</strong>
+                  <p className="text-[11px] text-stone-400 leading-relaxed">
+                    • <strong>W, A, S, D</strong>: Mozgás | <strong>Shift</strong>: Futás<br />
+                    • <strong>Egér</strong>: Kattints a 3D képre az egér rögzítéséhez (Pointer Lock), és forgasd a kamerát.<br />
+                    • <strong>Szóköz</strong>: Ugrás | <strong>E</strong>: Gyűjtés és beszélgetés<br />
+                    • <strong>V</strong>: Váltás külső (TPS) és belső (FPS) nézet között.
                   </p>
                 </div>
               </div>
@@ -779,7 +1068,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
               onClick={() => setControlsHelpOpen(false)}
               className="mt-5 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg text-xs uppercase tracking-wider transition"
             >
-              Értem, vissza a játékba
+              Értem, vissza a túléléshez
             </button>
           </div>
         </div>

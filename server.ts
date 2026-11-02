@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import os from 'os';
 import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
@@ -380,8 +381,27 @@ async function startServer() {
     });
   }
 
-  app.listen(port, () => {
-    console.log(`Project Isle server running on port ${port}`);
+  function getLocalIP() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name] || []) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          return iface.address;
+        }
+      }
+    }
+    return '127.0.0.1';
+  }
+
+  const localIp = getLocalIP();
+  const PORT_NUM = Number(port);
+
+  app.listen(PORT_NUM, '0.0.0.0', () => {
+    console.log(`\n======================================================`);
+    console.log(`🌴 Project Isle Survival Engine elindult!`);
+    console.log(`💻 Windows / PC böngésző: http://localhost:${PORT_NUM}`);
+    console.log(`📱 Mobiltelefonról (Wi-Fi): http://${localIp}:${PORT_NUM}`);
+    console.log(`======================================================\n`);
   });
 }
 
