@@ -1,0 +1,6 @@
+{
+  "name": "Project Isle: Island Survival & Escape Simulator",
+  "description": "Fotorealisztikus trópusi túlélő, AI társakkal, bázisépítéssel, ősi romokkal és tengeri/repülő menekülési útvonalakkal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
