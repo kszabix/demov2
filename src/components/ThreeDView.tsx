@@ -25,6 +25,10 @@ import {
   ZoomIn,
   ZoomOut,
   Crosshair,
+  TreePine,
+  Pickaxe,
+  Package,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface ThreeDViewProps {
@@ -34,12 +38,28 @@ interface ThreeDViewProps {
   onSwitchToTab: (tab: 'map' | 'base' | 'companion' | 'escape' | 'ruins' | 'studio') => void;
 }
 
-interface InteractiveProp {
+export interface InteractiveProp {
   id: string;
   nameHu: string;
   mesh: THREE.Object3D;
-  action: () => void;
-  type: 'shelter' | 'fire' | 'plane' | 'ruins' | 'item';
+  action: (hitPoint?: THREE.Vector3) => void;
+  type: 'shelter' | 'fire' | 'plane' | 'ruins' | 'item' | 'tree' | 'rock' | 'herb' | 'crate' | 'driftwood';
+  resourceLabel?: string;
+}
+
+export interface HoverInfo {
+  nameHu: string;
+  resourceLabel?: string;
+  type: string;
+  dist: number;
+  inRange: boolean;
+}
+
+export interface GatheringToast {
+  id: string;
+  text: string;
+  icon: string;
+  time: number;
 }
 
 export const ThreeDView: React.FC<ThreeDViewProps> = ({
@@ -54,6 +74,39 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   const [interactionPrompt, setInteractionPrompt] = useState<string | null>(null);
   const [controlsHelpOpen, setControlsHelpOpen] = useState<boolean>(false);
   const [currentZoneName, setCurrentZoneName] = useState<string>('Partvidék & Sekély Vizek');
+  
+  // Interactive 3D object clicking state
+  const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
+  const [gatheringToasts, setGatheringToasts] = useState<GatheringToast[]>([]);
+  const [floatingNotice, setFloatingNotice] = useState<{ text: string; type: 'warn' | 'info' | 'success' } | null>(null);
+
+  const toastTimerRef = useRef<any>(null);
+  const showGatherToast = (text: string, icon: string = '✨') => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setGatheringToasts((prev) => [...prev.slice(-3), { id, text, icon, time: Date.now() }]);
+    setTimeout(() => {
+      setGatheringToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 2800);
+  };
+
+  const triggerFloatingNotice = (text: string, type: 'warn' | 'info' | 'success' = 'info') => {
+    setFloatingNotice({ text, type });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setFloatingNotice(null);
+    }, 2400);
+  };
+
+  const hudCallbacksRef = useRef({
+    showGatherToast,
+    triggerFloatingNotice,
+    setHoverInfo,
+  });
+  hudCallbacksRef.current = {
+    showGatherToast,
+    triggerFloatingNotice,
+    setHoverInfo,
+  };
   
   // Touch controls overlay toggle (enabled by default on all devices, toggleable)
   const [showTouchControls, setShowTouchControls] = useState<boolean>(true);
@@ -245,11 +298,20 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     baseGroup.position.set(18, getGroundHeight(18, 75), 75);
     scene.add(baseGroup);
 
-    interactables.push({
+    const registerInteractable = (prop: InteractiveProp) => {
+      interactables.push(prop);
+      prop.mesh.userData.prop = prop;
+      prop.mesh.traverse((child) => {
+        child.userData.prop = prop;
+      });
+    };
+
+    registerInteractable({
       id: 'shelter',
       nameHu: 'Cölöpös Bázis Menedék',
       mesh: baseGroup,
       type: 'shelter',
+      resourceLabel: 'Műhely & Készítés',
       action: () => callbacksRef.current.onSwitchToTab('base'),
     });
 
@@ -269,15 +331,17 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     fireGroup.position.set(12, getGroundHeight(12, 73), 73);
     scene.add(fireGroup);
 
-    interactables.push({
+    registerInteractable({
       id: 'campfire',
       nameHu: 'Túlélő Tábortűz',
       mesh: fireGroup,
       type: 'fire',
+      resourceLabel: 'Fűtés & Melegedés (-1 Fa)',
       action: () => {
         callbacksRef.current.onUpdateInventory('driftwood', -1);
         callbacksRef.current.onLogEvent('Megraktad a tábortüzet száraz fával (+60 perc meleg).');
         sound.playCraftSuccess();
+        hudCallbacksRef.current.showGatherToast('🔥 Tábortűz megrakva (+60p meleg)', '🔥');
       },
     });
 
@@ -320,11 +384,12 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     planeGroup.rotateY(0.6);
     scene.add(planeGroup);
 
-    interactables.push({
+    registerInteractable({
       id: 'plane',
       nameHu: 'Lezuhant Teherszállító Repülőgép Roncs',
       mesh: planeGroup,
       type: 'plane',
+      resourceLabel: 'Menekülés & Repülőgép szerelés',
       action: () => callbacksRef.current.onSwitchToTab('escape'),
     });
 
@@ -351,15 +416,58 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     ruinsGroup.position.set(45, getGroundHeight(45, -25), -25);
     scene.add(ruinsGroup);
 
-    interactables.push({
+    registerInteractable({
       id: 'ruins',
       nameHu: 'Ősi Romok Misztikus Kőkapuja',
       mesh: ruinsGroup,
       type: 'ruins',
+      resourceLabel: 'Rejtvények & Titán ötvözet',
       action: () => callbacksRef.current.onSwitchToTab('ruins'),
     });
 
-    // 8. Palm Trees Scatter
+    // 3D Harvest Particles Pool
+    interface Particle {
+      mesh: THREE.Mesh;
+      velocity: THREE.Vector3;
+      life: number;
+      maxLife: number;
+    }
+    const activeParticles: Particle[] = [];
+
+    const spawnParticles = (pos: THREE.Vector3, type: 'wood' | 'rock' | 'leaf' | 'spark') => {
+      const count = type === 'leaf' ? 8 : 10;
+      for (let i = 0; i < count; i++) {
+        const geo = type === 'leaf'
+          ? new THREE.PlaneGeometry(0.18, 0.18)
+          : new THREE.BoxGeometry(0.12, 0.12, 0.12);
+        let color = 0x8d6e63;
+        if (type === 'leaf') color = 0x2e7d32;
+        if (type === 'rock') color = 0x78909c;
+        if (type === 'spark') color = 0xffd54f;
+
+        const pMat = new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide });
+        const pMesh = new THREE.Mesh(geo, pMat);
+        pMesh.position.copy(pos);
+        pMesh.position.x += (Math.random() - 0.5) * 0.4;
+        pMesh.position.y += (Math.random() - 0.5) * 0.4;
+        pMesh.position.z += (Math.random() - 0.5) * 0.4;
+
+        const vel = new THREE.Vector3(
+          (Math.random() - 0.5) * 4.5,
+          Math.random() * 4.0 + 2.0,
+          (Math.random() - 0.5) * 4.5
+        );
+        scene.add(pMesh);
+        activeParticles.push({
+          mesh: pMesh,
+          velocity: vel,
+          life: 0,
+          maxLife: 0.6 + Math.random() * 0.35,
+        });
+      }
+    };
+
+    // 8. CLICKABLE 3D PALM TREES (Trunks, Fronds & Coconuts)
     const palmPositions = [
       { x: 10, z: 65 },
       { x: 26, z: 70 },
@@ -371,27 +479,281 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       { x: -8, z: 30 },
       { x: 15, z: 20 },
       { x: -30, z: 20 },
+      { x: -40, z: 35 },
+      { x: 20, z: 40 },
+      { x: 0, z: 78 },
+      { x: -20, z: 82 },
     ];
 
-    const trunkGeo = new THREE.CylinderGeometry(0.25, 0.45, 6, 6);
-    const frondGeo = new THREE.ConeGeometry(3, 1.4, 5);
-    const leafMat = new THREE.MeshStandardMaterial({ color: 0x1b5e20, roughness: 0.85 });
+    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.48, 6.5, 7);
+    const frondGeo = new THREE.ConeGeometry(3.2, 1.4, 6);
+    const coconutGeo = new THREE.SphereGeometry(0.22, 6, 6);
 
-    palmPositions.forEach((p) => {
+    const palmBarkMat = new THREE.MeshStandardMaterial({ color: 0x5a3d28, roughness: 0.85 });
+    const palmFrondMat = new THREE.MeshStandardMaterial({ color: 0x1e6f24, roughness: 0.75 });
+    const coconutMat = new THREE.MeshStandardMaterial({ color: 0x3e2718, roughness: 0.95 });
+
+    palmPositions.forEach((p, idx) => {
       const tree = new THREE.Group();
-      const trunk = new THREE.Mesh(trunkGeo, woodMat);
-      trunk.position.y = 3;
-      trunk.rotateZ(0.08);
+      // Curved trunk
+      const trunk = new THREE.Mesh(trunkGeo, palmBarkMat);
+      trunk.position.y = 3.25;
+      trunk.rotateZ((idx % 2 === 0 ? 1 : -1) * 0.1);
+      tree.add(trunk);
 
-      const fronds = new THREE.Mesh(frondGeo, leafMat);
-      fronds.position.y = 6;
-      tree.add(trunk, fronds);
+      // Fronds canopy
+      const fronds = new THREE.Mesh(frondGeo, palmFrondMat);
+      fronds.position.set(trunk.position.x, 6.5, trunk.position.z);
+      tree.add(fronds);
+
+      // Coconuts
+      for (let c = 0; c < 3; c++) {
+        const nut = new THREE.Mesh(coconutGeo, coconutMat);
+        const a = (c / 3) * Math.PI * 2;
+        nut.position.set(trunk.position.x + Math.cos(a) * 0.45, 5.8, trunk.position.z + Math.sin(a) * 0.45);
+        tree.add(nut);
+      }
 
       tree.position.set(p.x, getGroundHeight(p.x, p.z), p.z);
       scene.add(tree);
+
+      registerInteractable({
+        id: `tree-${idx}`,
+        nameHu: 'Trópusi Kókuszpálma',
+        mesh: tree,
+        type: 'tree',
+        resourceLabel: 'Fa rönk, Pálmalevél, Kókuszdió',
+        action: (hitPoint) => {
+          sound.playChop();
+          const p = hitPoint || tree.position.clone().add(new THREE.Vector3(0, 2.5, 0));
+          spawnParticles(p, 'wood');
+          spawnParticles(p, 'leaf');
+
+          tree.userData.shake = 0.35;
+          callbacksRef.current.onUpdateInventory('driftwood', 2);
+          callbacksRef.current.onUpdateInventory('palm_leaves', 2);
+
+          const gotCoconut = Math.random() < 0.45;
+          if (gotCoconut) {
+            callbacksRef.current.onUpdateInventory('coconut', 1);
+          }
+
+          callbacksRef.current.onLogEvent(
+            `Kivágtál a pálmafából: +2 Fa rönk, +2 Pálmalevél${gotCoconut ? ', +1 Kókuszdió!' : '.'}`
+          );
+
+          hudCallbacksRef.current.showGatherToast(
+            gotCoconut ? '🪵 +2 Fa rönk, 🍃 +2 Levél, 🥥 +1 Kókusz' : '🪵 +2 Fa rönk, 🍃 +2 Pálmalevél',
+            '🌴'
+          );
+        },
+      });
     });
 
-    // 9. Collectible Driftwood Logs on Beach
+    // 9. CLICKABLE 3D MINERAL & VOLCANIC ROCKS
+    const rockPositions = [
+      { x: 22, z: 78, scale: 1.4 },
+      { x: -18, z: 78, scale: 1.2 },
+      { x: 38, z: 62, scale: 1.6 },
+      { x: -28, z: 38, scale: 1.5 },
+      { x: 25, z: 10, scale: 1.7 },
+      { x: -12, z: -10, scale: 1.3 },
+      { x: 35, z: -35, scale: 1.8 },
+      { x: -20, z: -40, scale: 1.9 },
+      { x: 10, z: -45, scale: 1.6 },
+      { x: 48, z: 15, scale: 1.4 },
+    ];
+
+    const boulderMat = new THREE.MeshStandardMaterial({
+      color: 0x45484f,
+      roughness: 0.85,
+      metalness: 0.2,
+    });
+    const flintVeinMat = new THREE.MeshStandardMaterial({
+      color: 0x8a929b,
+      metalness: 0.7,
+      roughness: 0.3,
+    });
+    const mossMat = new THREE.MeshStandardMaterial({
+      color: 0x2e4a2c,
+      roughness: 0.95,
+    });
+
+    rockPositions.forEach((p, idx) => {
+      const rockGroup = new THREE.Group();
+      // Main faceted boulder
+      const mainRock = new THREE.Mesh(new THREE.DodecahedronGeometry(p.scale), boulderMat);
+      mainRock.position.y = p.scale * 0.7;
+      mainRock.rotateX(idx * 0.5);
+      mainRock.rotateZ(idx * 0.7);
+      rockGroup.add(mainRock);
+
+      // Embedded flint mineral vein
+      const vein = new THREE.Mesh(new THREE.BoxGeometry(p.scale * 0.4, p.scale * 0.6, p.scale * 0.2), flintVeinMat);
+      vein.position.set(p.scale * 0.4, p.scale * 0.8, 0);
+      vein.rotateY(0.4);
+      rockGroup.add(vein);
+
+      // Secondary smaller base stone
+      const subStone = new THREE.Mesh(new THREE.IcosahedronGeometry(p.scale * 0.5), mossMat);
+      subStone.position.set(-p.scale * 0.7, p.scale * 0.3, p.scale * 0.3);
+      rockGroup.add(subStone);
+
+      rockGroup.position.set(p.x, getGroundHeight(p.x, p.z), p.z);
+      scene.add(rockGroup);
+
+      registerInteractable({
+        id: `rock-${idx}`,
+        nameHu: idx > 6 ? 'Vulkanikus Bazalttömb' : 'Kovakő Ásványszikla',
+        mesh: rockGroup,
+        type: 'rock',
+        resourceLabel: 'Kovakő szilánk, Kőzet, Fémhulladék',
+        action: (hitPoint) => {
+          sound.playMine();
+          const p = hitPoint || rockGroup.position.clone().add(new THREE.Vector3(0, 1.2, 0));
+          spawnParticles(p, 'rock');
+          spawnParticles(p, 'spark');
+
+          rockGroup.userData.shake = 0.25;
+          callbacksRef.current.onUpdateInventory('flint_shard', 2);
+
+          const gotScrap = Math.random() < 0.35;
+          if (gotScrap) {
+            callbacksRef.current.onUpdateInventory('scrap_metal', 1);
+          }
+
+          callbacksRef.current.onLogEvent(
+            `Kovakő sziklát bányásztál: +2 Kovakő szilánk${gotScrap ? ', +1 Fémhulladék!' : '.'}`
+          );
+
+          hudCallbacksRef.current.showGatherToast(
+            gotScrap ? '🪨 +2 Kovakő szilánk, ⚙️ +1 Fémhulladék' : '🪨 +2 Kovakő szilánk',
+            '⛏️'
+          );
+        },
+      });
+    });
+
+    // 10. CLICKABLE 3D JUNGLE HERB & VINE BUSHES
+    const herbPositions = [
+      { x: 8, z: 72 },
+      { x: -8, z: 62 },
+      { x: 18, z: 52 },
+      { x: -18, z: 35 },
+      { x: 28, z: 25 },
+      { x: 38, z: 32 },
+      { x: 32, z: -15 },
+      { x: -5, z: 2 },
+    ];
+
+    const herbLeafMat = new THREE.MeshStandardMaterial({ color: 0x1b5e20, roughness: 0.8 });
+    const berryMat = new THREE.MeshStandardMaterial({ color: 0xe53935, roughness: 0.4 });
+
+    herbPositions.forEach((p, idx) => {
+      const bushGroup = new THREE.Group();
+      // Foliage clusters
+      for (let i = 0; i < 4; i++) {
+        const leafBall = new THREE.Mesh(new THREE.SphereGeometry(0.55 + (i % 2) * 0.15, 6, 6), herbLeafMat);
+        const a = (i / 4) * Math.PI * 2;
+        leafBall.position.set(Math.cos(a) * 0.45, 0.45 + (i % 2) * 0.2, Math.sin(a) * 0.45);
+        bushGroup.add(leafBall);
+      }
+      // Medicinal berries
+      for (let b = 0; b < 6; b++) {
+        const berry = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 5), berryMat);
+        const ba = (b / 6) * Math.PI * 2;
+        berry.position.set(Math.cos(ba) * 0.65, 0.6 + (b % 3) * 0.15, Math.sin(ba) * 0.65);
+        bushGroup.add(berry);
+      }
+
+      bushGroup.position.set(p.x, getGroundHeight(p.x, p.z), p.z);
+      scene.add(bushGroup);
+
+      registerInteractable({
+        id: `herb-${idx}`,
+        nameHu: 'Trópusi Gyógynövény & Lián Bokor',
+        mesh: bushGroup,
+        type: 'herb',
+        resourceLabel: 'Gyógynövény, Lián kötél',
+        action: (hitPoint) => {
+          sound.playHarvest();
+          const p = hitPoint || bushGroup.position.clone().add(new THREE.Vector3(0, 0.6, 0));
+          spawnParticles(p, 'leaf');
+
+          bushGroup.userData.shake = 0.35;
+          callbacksRef.current.onUpdateInventory('medicinal_herb', 2);
+          callbacksRef.current.onUpdateInventory('vine_rope', 1);
+
+          callbacksRef.current.onLogEvent(
+            'Gyógynövényeket és indákat gyűjtöttél: +2 Gyógynövény, +1 Lián kötél.'
+          );
+
+          hudCallbacksRef.current.showGatherToast('🌿 +2 Gyógynövény, 🪢 +1 Lián kötél', '🌿');
+        },
+      });
+    });
+
+    // 11. CLICKABLE 3D SUPPLY CRATES FROM SHIPWRECK
+    const cratePositions = [
+      { x: 6, z: 82, rot: 0.2 },
+      { x: -16, z: 75, rot: -0.3 },
+      { x: -8, z: 18, rot: 0.5 },
+      { x: 28, z: 75, rot: 0.1 },
+    ];
+
+    const crateWoodMat = new THREE.MeshStandardMaterial({ color: 0x6d5236, roughness: 0.9 });
+    const crateIronMat = new THREE.MeshStandardMaterial({ color: 0x37474f, roughness: 0.6, metalness: 0.7 });
+
+    cratePositions.forEach((p, idx) => {
+      const crateGroup = new THREE.Group();
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), crateWoodMat);
+      box.position.y = 0.45;
+      crateGroup.add(box);
+
+      // Iron strapping
+      const strap1 = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.12, 0.92), crateIronMat);
+      strap1.position.y = 0.45;
+      crateGroup.add(strap1);
+
+      crateGroup.position.set(p.x, getGroundHeight(p.x, p.z), p.z);
+      crateGroup.rotateY(p.rot);
+      scene.add(crateGroup);
+
+      registerInteractable({
+        id: `crate-${idx}`,
+        nameHu: 'Partra Sodródott Ellátmányláda',
+        mesh: crateGroup,
+        type: 'crate',
+        resourceLabel: 'Fémhulladék, Ivóvíz, Eszközök',
+        action: (hitPoint) => {
+          sound.playCraftSuccess();
+          const p = hitPoint || crateGroup.position.clone().add(new THREE.Vector3(0, 0.5, 0));
+          spawnParticles(p, 'wood');
+          spawnParticles(p, 'spark');
+
+          crateGroup.userData.shake = 0.3;
+          callbacksRef.current.onUpdateInventory('scrap_metal', 2);
+
+          const gotWater = Math.random() < 0.6;
+          if (gotWater) {
+            callbacksRef.current.onUpdateInventory('fresh_water_flask', 1);
+          } else {
+            callbacksRef.current.onUpdateInventory('flint_shard', 1);
+          }
+
+          callbacksRef.current.onLogEvent(
+            `Kinyitottad az ellátmányládát: +2 Fémhulladék${gotWater ? ', +1 Kulacs ivóvíz!' : ', +1 Kovakő szilánk!'}`
+          );
+
+          hudCallbacksRef.current.showGatherToast(
+            gotWater ? '📦 +2 Fémhulladék, 💧 +1 Kulacs víz' : '📦 +2 Fémhulladék, 🪨 +1 Kovakő szilánk',
+            '📦'
+          );
+        },
+      });
+    });
+
+    // 12. Collectible Driftwood Logs on Beach
     const driftwoodMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.9 });
     const logGeo = new THREE.CylinderGeometry(0.2, 0.22, 2.5, 6);
     logGeo.rotateZ(Math.PI / 2);
@@ -401,25 +763,32 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       { x: 32, z: 80 },
       { x: -10, z: 85 },
       { x: 5, z: 92 },
+      { x: -22, z: 82 },
     ].forEach((pos, idx) => {
       const log = new THREE.Mesh(logGeo, driftwoodMat);
       log.position.set(pos.x, getGroundHeight(pos.x, pos.z) + 0.3, pos.z);
       scene.add(log);
-      interactables.push({
+
+      registerInteractable({
         id: `wood-${idx}`,
         nameHu: 'Uszadékfa rönk',
         mesh: log,
-        type: 'item',
-        action: () => {
-          sound.playCraftSuccess();
+        type: 'driftwood',
+        resourceLabel: '+3 Fa rönk',
+        action: (hitPoint) => {
+          sound.playHarvest();
+          const p = hitPoint || log.position.clone().add(new THREE.Vector3(0, 0.3, 0));
+          spawnParticles(p, 'wood');
+
           callbacksRef.current.onUpdateInventory('driftwood', 3);
-          callbacksRef.current.onLogEvent('Uszadékfa rönköt gyűjtöttél a tengerparti homokból (+3 Fa).');
+          callbacksRef.current.onLogEvent('Uszadékfa rönköt gyűjtöttél a tengerparti homokból (+3 Fa rönk).');
+          hudCallbacksRef.current.showGatherToast('🪵 +3 Uszadékfa rönk felvéve', '🪵');
           log.position.y = -100;
         },
       });
     });
 
-    // 10. Companion (Maya Vance) 3D Avatar
+    // 13. Companion (Maya Vance) 3D Avatar
     const companionGroup = new THREE.Group();
     const compMat = new THREE.MeshStandardMaterial({ color: 0x00b4d8 });
     const compHeadMat = new THREE.MeshStandardMaterial({ color: 0xffd166 });
@@ -430,6 +799,15 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     companionGroup.add(compBody, compHead);
     companionGroup.position.set(16, getGroundHeight(16, 73), 73);
     scene.add(companionGroup);
+
+    registerInteractable({
+      id: 'companion',
+      nameHu: 'Maya Vance',
+      mesh: companionGroup,
+      type: 'item',
+      resourceLabel: 'Beszélgetés & Feladatkiosztás',
+      action: () => callbacksRef.current.onSwitchToTab('companion'),
+    });
 
     // 11. PLAYER 3D AVATAR (Survivor Character)
     const playerGroup = new THREE.Group();
@@ -512,20 +890,82 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    // Desktop mouse look: supports both click-and-drag and pointer lock
+    // Raycasting for clickable 3D objects
+    const raycaster = new THREE.Raycaster();
+    const mouseCoord = new THREE.Vector2();
+    let playerArmSwing = 0;
+
+    const checkRaycastHit = (clientX: number, clientY: number): { prop: InteractiveProp; point: THREE.Vector3 } | null => {
+      if (!container) return null;
+      const rect = container.getBoundingClientRect();
+      mouseCoord.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      mouseCoord.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(mouseCoord, camera);
+
+      const clickableMeshes: THREE.Object3D[] = [];
+      for (const item of interactables) {
+        clickableMeshes.push(item.mesh);
+      }
+
+      const intersects = raycaster.intersectObjects(clickableMeshes, true);
+      if (intersects.length > 0) {
+        let hitObj: THREE.Object3D | null = intersects[0].object;
+        while (hitObj) {
+          if (hitObj.userData?.prop) {
+            return { prop: hitObj.userData.prop, point: intersects[0].point };
+          }
+          hitObj = hitObj.parent;
+        }
+      }
+      return null;
+    };
+
+    const handle3DObjectClick = (clientX: number, clientY: number): boolean => {
+      const hit = checkRaycastHit(clientX, clientY);
+      if (!hit) return false;
+
+      const { prop, point } = hit;
+      const dist = player.pos.distanceTo(prop.mesh.position);
+
+      if (dist > 22.0) {
+        sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice(
+          `${prop.nameHu} túl messze van (${Math.round(dist)}m)! Lépj közelebb (max 20m) a gyűjtéshez.`,
+          'warn'
+        );
+        return true;
+      }
+
+      // In range: trigger resource gathering / interaction!
+      playerArmSwing = 1.0;
+      prop.action(point);
+      return true;
+    };
+
+    // Desktop mouse look: supports both click-and-drag and pointer lock, plus 3D raycast clicking
     let isMouseDown = false;
+    let mouseDownPos = { x: 0, y: 0 };
+    let mouseDownTime = 0;
+    let hasMouseDragged = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
+    let lastHoverTime = 0;
 
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0 || e.button === 2) {
         isMouseDown = true;
+        mouseDownPos = { x: e.clientX, y: e.clientY };
+        mouseDownTime = performance.now();
+        hasMouseDragged = false;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
       }
     };
 
-    const onMouseUp = () => {
+    const onMouseUp = (e: MouseEvent) => {
+      if (isMouseDown && !hasMouseDragged && performance.now() - mouseDownTime < 450) {
+        handle3DObjectClick(e.clientX, e.clientY);
+      }
       isMouseDown = false;
     };
 
@@ -536,11 +976,35 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       } else if (isMouseDown) {
         const dx = e.clientX - lastMouseX;
         const dy = e.clientY - lastMouseY;
+        if (Math.hypot(e.clientX - mouseDownPos.x, e.clientY - mouseDownPos.y) > 7) {
+          hasMouseDragged = true;
+        }
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
 
         cam.yaw -= dx * 0.0055;
         cam.pitch = Math.max(-0.35, Math.min(1.3, cam.pitch + dy * 0.0055));
+      } else {
+        // Desktop Hover Check (throttled)
+        const now = performance.now();
+        if (now - lastHoverTime > 50) {
+          lastHoverTime = now;
+          const hit = checkRaycastHit(e.clientX, e.clientY);
+          if (hit) {
+            container.style.cursor = 'pointer';
+            const dist = player.pos.distanceTo(hit.prop.mesh.position);
+            hudCallbacksRef.current.setHoverInfo({
+              nameHu: hit.prop.nameHu,
+              resourceLabel: hit.prop.resourceLabel,
+              type: hit.prop.type,
+              dist: Math.round(dist),
+              inRange: dist <= 22.0,
+            });
+          } else {
+            container.style.cursor = 'default';
+            hudCallbacksRef.current.setHoverInfo(null);
+          }
+        }
       }
     };
 
@@ -561,8 +1025,11 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     };
     container.addEventListener('click', onContainerClick);
 
-    // Touch look handling on canvas
+    // Touch look handling on canvas & direct tap to gather
     let touchLook = { x: 0, y: 0, active: false, id: -1 };
+    let touchStartPos = { x: 0, y: 0 };
+    let touchStartTime = 0;
+    let hasTouchDragged = false;
     let initialPinchDist = 0;
     let initialCamDist = 5.5;
 
@@ -580,9 +1047,11 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         const t = e.changedTouches[i];
         const relX = t.clientX - rect.left;
         const relY = t.clientY - rect.top;
-        // Swipe on upper half or right 65% of screen rotates camera
         if ((relX > rect.width * 0.35 || relY < rect.height * 0.5) && !touchLook.active) {
           touchLook = { x: t.clientX, y: t.clientY, active: true, id: t.identifier };
+          touchStartPos = { x: t.clientX, y: t.clientY };
+          touchStartTime = performance.now();
+          hasTouchDragged = false;
           break;
         }
       }
@@ -605,12 +1074,13 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         if (t.identifier === touchLook.id) {
           const dx = t.clientX - touchLook.x;
           const dy = t.clientY - touchLook.y;
+          if (Math.hypot(t.clientX - touchStartPos.x, t.clientY - touchStartPos.y) > 9) {
+            hasTouchDragged = true;
+          }
           touchLook.x = t.clientX;
           touchLook.y = t.clientY;
 
-          // Horizontal swipe orbits 360 degrees around survivor
           cam.yaw -= dx * 0.007;
-          // Vertical swipe tilts pitch up / down
           cam.pitch = Math.max(-0.35, Math.min(1.3, cam.pitch + dy * 0.007));
           e.preventDefault();
           break;
@@ -626,6 +1096,9 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         if (e.changedTouches[i].identifier === touchLook.id) {
           touchLook.active = false;
           touchLook.id = -1;
+          if (!hasTouchDragged && performance.now() - touchStartTime < 400) {
+            handle3DObjectClick(touchStartPos.x, touchStartPos.y);
+          }
           break;
         }
       }
@@ -740,20 +1213,60 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       playerGroup.rotation.y = player.charYaw;
       playerGroup.visible = cameraMode === 'tps';
 
-      // Limb swing walking animation
+      // Limb swing walking animation & tool swing
+      if (playerArmSwing > 0) {
+        playerArmSwing = Math.max(0, playerArmSwing - dt * 3.5);
+        rightArm.rotation.x = -Math.sin(playerArmSwing * Math.PI) * 1.6;
+      }
+
       if (isMoving) {
         const walkCycle = time * 0.012 * (isSprinting ? 1.6 : 1.1);
         leftLeg.rotation.x = Math.sin(walkCycle) * 0.55;
         rightLeg.rotation.x = -Math.sin(walkCycle) * 0.55;
         leftArm.rotation.x = -Math.sin(walkCycle) * 0.5;
-        rightArm.rotation.x = Math.sin(walkCycle) * 0.5;
+        if (playerArmSwing <= 0) {
+          rightArm.rotation.x = Math.sin(walkCycle) * 0.5;
+        }
         playerTorso.position.y = 1.1 + Math.abs(Math.sin(walkCycle)) * 0.05;
       } else {
         leftLeg.rotation.x = 0;
         rightLeg.rotation.x = 0;
         leftArm.rotation.x = 0;
-        rightArm.rotation.x = 0;
+        if (playerArmSwing <= 0) {
+          rightArm.rotation.x = 0;
+        }
         playerTorso.position.y = 1.1;
+      }
+
+      // Animate active 3D particle bursts
+      for (let i = activeParticles.length - 1; i >= 0; i--) {
+        const p = activeParticles[i];
+        p.life += dt;
+        p.mesh.position.addScaledVector(p.velocity, dt);
+        p.velocity.y -= 11.5 * dt; // gravity
+        const progress = p.life / p.maxLife;
+        const scale = Math.max(0.001, 1 - progress);
+        p.mesh.scale.set(scale, scale, scale);
+
+        if (p.life >= p.maxLife) {
+          scene.remove(p.mesh);
+          p.mesh.geometry.dispose();
+          if (p.mesh.material instanceof THREE.Material) {
+            p.mesh.material.dispose();
+          }
+          activeParticles.splice(i, 1);
+        }
+      }
+
+      // Animate prop shake wobble upon hit
+      for (const item of interactables) {
+        if (item.mesh.userData?.shake && item.mesh.userData.shake > 0.001) {
+          item.mesh.userData.shake = Math.max(0, item.mesh.userData.shake - dt * 1.8);
+          const s = item.mesh.userData.shake;
+          item.mesh.rotation.z = Math.sin(time * 0.045) * s * 0.22;
+        } else if (item.mesh.userData?.shake !== undefined) {
+          item.mesh.rotation.z = 0;
+        }
       }
 
       // Detect active zone by coordinates
@@ -853,6 +1366,14 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       terrainMat.dispose();
       waterGeo.dispose();
       waterMat.dispose();
+      for (const p of activeParticles) {
+        scene.remove(p.mesh);
+        p.mesh.geometry.dispose();
+        if (p.mesh.material instanceof THREE.Material) {
+          p.mesh.material.dispose();
+        }
+      }
+      activeParticles.length = 0;
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
@@ -939,8 +1460,84 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         </div>
       </div>
 
-      {/* Proximity Interaction Prompt */}
-      {interactionPrompt && (
+      {/* Hover Inspection Badge on 3D Objects */}
+      {hoverInfo && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 pointer-events-none z-30 transition-all duration-150 animate-in fade-in zoom-in-95">
+          <div
+            className={`px-3.5 py-2 rounded-xl backdrop-blur-md border shadow-2xl flex items-center gap-3 ${
+              hoverInfo.inRange
+                ? 'bg-slate-900/95 border-emerald-500/80 text-emerald-100 ring-1 ring-emerald-500/30'
+                : 'bg-slate-900/95 border-amber-500/70 text-amber-100 ring-1 ring-amber-500/30'
+            }`}
+          >
+            <span className="text-xl shrink-0">
+              {hoverInfo.type === 'tree'
+                ? '🌴'
+                : hoverInfo.type === 'rock'
+                ? '⛏️'
+                : hoverInfo.type === 'herb'
+                ? '🌿'
+                : hoverInfo.type === 'crate'
+                ? '📦'
+                : hoverInfo.type === 'driftwood'
+                ? '🪵'
+                : '✨'}
+            </span>
+            <div className="flex flex-col text-left">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white tracking-wide">{hoverInfo.nameHu}</span>
+                <span
+                  className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                    hoverInfo.inRange ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/60' : 'bg-amber-950 text-amber-300 border border-amber-700/60'
+                  }`}
+                >
+                  {hoverInfo.dist}m {hoverInfo.inRange ? '• Hatótávon belül' : '• Lépj közelebb'}
+                </span>
+              </div>
+              {hoverInfo.resourceLabel && (
+                <span className="text-[10px] text-stone-300 font-medium mt-0.5">
+                  Nyersanyag: <span className="text-stone-100 font-semibold">{hoverInfo.resourceLabel}</span>
+                </span>
+              )}
+              <span className="text-[9px] font-semibold mt-0.5 text-emerald-400">
+                {hoverInfo.inRange ? '👉 Kattints / Érints a 3D begyűjtéshez!' : 'Max 20 méter távolságból gyűjthető'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Notice Banner (e.g. out-of-range warnings) */}
+      {floatingNotice && (
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 pointer-events-none z-30 animate-in fade-in slide-in-from-top-2">
+          <div
+            className={`px-4 py-2 rounded-xl shadow-2xl text-xs font-bold flex items-center gap-2.5 border backdrop-blur-md ${
+              floatingNotice.type === 'warn'
+                ? 'bg-amber-950/95 border-amber-500/80 text-amber-200'
+                : 'bg-emerald-950/95 border-emerald-500/80 text-emerald-200'
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{floatingNotice.text}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Real-time Gathering Loot Toasts (Top Right) */}
+      <div className="absolute top-16 right-3 flex flex-col gap-2 pointer-events-none z-30 max-w-xs">
+        {gatheringToasts.map((toast) => (
+          <div
+            key={toast.id}
+            className="bg-slate-900/95 border border-emerald-500/80 text-white px-3 py-2 rounded-xl shadow-2xl flex items-center gap-2.5 animate-in slide-in-from-right-4 duration-150 backdrop-blur"
+          >
+            <span className="text-lg shrink-0">{toast.icon}</span>
+            <span className="text-xs font-bold text-emerald-200 tracking-wide">{toast.text}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Proximity Interaction Prompt (Companion & Camp) */}
+      {interactionPrompt && !hoverInfo && (
         <div
           onClick={handleTriggerAction}
           className="absolute top-16 left-1/2 -translate-x-1/2 bg-slate-900/95 border-2 border-emerald-500 rounded-xl px-4 py-2 shadow-2xl flex items-center gap-2.5 animate-bounce pointer-events-auto cursor-pointer active:scale-95 transition"
@@ -1249,15 +1846,30 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
             </div>
 
             <div className="space-y-3 text-xs text-stone-300">
+              <div className="bg-stone-950 p-3 rounded-lg border border-emerald-800/80 flex items-center gap-3">
+                <TreePine className="w-6 h-6 text-emerald-400 shrink-0" />
+                <div>
+                  <strong className="text-emerald-300 block mb-0.5">Kattintható 3D Tárgyak & Bányászat:</strong>
+                  <p className="text-[11px] text-stone-300 leading-relaxed">
+                    • <strong>Pálmafák 🌴</strong>: Kattints a fára fa rönk, pálmalevél és kókuszdió begyűjtéséhez.<br />
+                    • <strong>Ásványsziklák ⛏️</strong>: Kattints rá kovakő szilánk és fémhulladék bányászatához.<br />
+                    • <strong>Bokrok & Indák 🌿</strong>: Gyógynövény és indakötél szedése.<br />
+                    • <strong>Ládák & Uszadékfa 📦</strong>: Ellátmány és ivóvíz közvetlen kibontása.<br />
+                    • <strong>Hatótávolság</strong>: Max 20 méter. Ha közelebb mész, az egérkurzor rámutat és azonnal kattintható!
+                  </p>
+                </div>
+              </div>
+
               <div className="bg-stone-950 p-3 rounded-lg border border-stone-800 flex items-center gap-3">
                 <Smartphone className="w-6 h-6 text-emerald-400 shrink-0" />
                 <div>
                   <strong className="text-stone-100 block mb-0.5">Mobiltelefon / Érintőképernyő:</strong>
                   <p className="text-[11px] text-stone-400 leading-relaxed">
-                    • <strong>Bal oldali D-Pad (⬆️ ⬇️ ⬅️ ➡️)</strong>: Karakter valós mozgása a szigeten a kamera irányához viszonyítva.<br />
+                    • <strong>Közvetlen érintés (Tap)</strong>: Érints meg bármilyen 3D fát vagy sziklát a begyűjtéshez!<br />
+                    • <strong>Bal oldali D-Pad (⬆️ ⬇️ ⬅️ ➡️)</strong>: Karakter valós mozgása a szigeten.<br />
                     • <strong>⚡ Villám gomb</strong>: Sprint / Gyors futás.<br />
                     • <strong>Jobb oldali KAMERA vezérlő</strong>: 360° körbeforgatás (↺ / ↻), fel/le döntés (⬆️ / ⬇️), zoom (+ / -) és Közép reset.<br />
-                    • <strong>Érintőképernyős húzás</strong>: A képernyőn bárhol szabad ujjhúzással is körbeforgatható és fel-le dönthető a kamera! Kétujjas csípéssel zoomolható.
+                    • <strong>Szabad ujjhúzás</strong>: A képernyőn húzással 360°-ban szabadon forgatható és dönthető a kamera.
                   </p>
                 </div>
               </div>
@@ -1267,11 +1879,12 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
                 <div>
                   <strong className="text-stone-100 block mb-0.5">Windows / Asztali PC:</strong>
                   <p className="text-[11px] text-stone-400 leading-relaxed">
+                    • <strong>Bal egérgomb kattintás</strong>: Közvetlen favágás, bányászat vagy szedés a 3D nézetben.<br />
                     • <strong>W, A, S, D</strong>: Karakter mozgás | <strong>Shift</strong>: Futás<br />
                     • <strong>Egér bal gomb húzás / Pointer Lock</strong>: 360° szabad körbeforgatás és fel-le nézés.<br />
-                    • <strong>Egérgörgő</strong>: Kamera távolság zoomolása.<br />
+                    • <strong>Egérgörgő</strong>: Kamera távolság zoomolása (+ / -).<br />
                     • <strong>Nyílbillentyűk vagy I, J, K, L</strong>: Kamera körbeforgatás és fel/le döntés billentyűzetről.<br />
-                    • <strong>Szóköz</strong>: Ugrás | <strong>E</strong>: Gyűjtés / Beszélgetés | <strong>R</strong>: Kamera visszaállítása a karakter mögé.
+                    • <strong>Szóköz</strong>: Ugrás | <strong>E</strong>: Gyűjtés / Beszélgetés | <strong>R</strong>: Kamera reset.
                   </p>
                 </div>
               </div>

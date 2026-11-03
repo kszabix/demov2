@@ -134,6 +134,116 @@ class SoundController {
       // Ignored
     }
   }
+
+  public playChop() {
+    if (this.isMuted) return;
+    try {
+      this.initCtx();
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      // Low wooden thud
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(140, now);
+      osc.frequency.exponentialRampToValueAtTime(45, now + 0.12);
+
+      gain.gain.setValueAtTime(0.25, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.13);
+
+      // Noise crack (wood splinter)
+      const buffer = this.ctx.createBuffer(1, Math.floor(this.ctx.sampleRate * 0.08), this.ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (this.ctx.sampleRate * 0.02));
+      }
+      const noise = this.ctx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(800, now);
+      const noiseGain = this.ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.18, now);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+
+      noise.connect(filter);
+      filter.connect(noiseGain);
+      noiseGain.connect(this.ctx.destination);
+      noise.start(now);
+    } catch {
+      // Ignored
+    }
+  }
+
+  public playMine() {
+    if (this.isMuted) return;
+    try {
+      this.initCtx();
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      // High mineral pick strike chime
+      const oscHigh = this.ctx.createOscillator();
+      const gainHigh = this.ctx.createGain();
+      oscHigh.type = 'sine';
+      oscHigh.frequency.setValueAtTime(1180, now);
+      oscHigh.frequency.exponentialRampToValueAtTime(640, now + 0.15);
+
+      gainHigh.gain.setValueAtTime(0.18, now);
+      gainHigh.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+
+      oscHigh.connect(gainHigh);
+      gainHigh.connect(this.ctx.destination);
+      oscHigh.start(now);
+      oscHigh.stop(now + 0.16);
+
+      // Deep stone crack
+      const oscLow = this.ctx.createOscillator();
+      const gainLow = this.ctx.createGain();
+      oscLow.type = 'square';
+      oscLow.frequency.setValueAtTime(180, now);
+      oscLow.frequency.exponentialRampToValueAtTime(50, now + 0.1);
+
+      gainLow.gain.setValueAtTime(0.12, now);
+      gainLow.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+
+      oscLow.connect(gainLow);
+      gainLow.connect(this.ctx.destination);
+      oscLow.start(now);
+      oscLow.stop(now + 0.11);
+    } catch {
+      // Ignored
+    }
+  }
+
+  public playHarvest() {
+    if (this.isMuted) return;
+    try {
+      this.initCtx();
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      [480, 640, 880].forEach((freq, idx) => {
+        const osc = this.ctx!.createOscillator();
+        const gain = this.ctx!.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.04);
+
+        gain.gain.setValueAtTime(0.09, now + idx * 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.04 + 0.14);
+
+        osc.connect(gain);
+        gain.connect(this.ctx!.destination);
+        osc.start(now + idx * 0.04);
+        osc.stop(now + idx * 0.04 + 0.15);
+      });
+    } catch {
+      // Ignored
+    }
+  }
 }
 
 export const sound = new SoundController();
