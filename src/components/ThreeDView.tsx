@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GameState } from '../game/simulation';
 import { sound } from '../utils/audio';
 import {
@@ -29,7 +30,24 @@ import {
   Pickaxe,
   Package,
   AlertTriangle,
+  User,
+  Upload,
+  Download,
+  RefreshCw,
+  FileCode,
+  Check,
+  ExternalLink,
+  ShieldCheck,
+  Trash2,
+  Palette,
+  Layers,
+  Loader2,
 } from 'lucide-react';
+import {
+  saveCustomModel,
+  getSavedCustomModel,
+  clearSavedCustomModel,
+} from '../utils/avatarStorage';
 
 interface ThreeDViewProps {
   gameState: GameState;
@@ -79,6 +97,22 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [gatheringToasts, setGatheringToasts] = useState<GatheringToast[]>([]);
   const [floatingNotice, setFloatingNotice] = useState<{ text: string; type: 'warn' | 'info' | 'success' } | null>(null);
+
+  // 3D Avatar Customization & GLB Model Loader State
+  const [characterModalOpen, setCharacterModalOpen] = useState<boolean>(false);
+  const [activeSkin, setActiveSkin] = useState<'default' | 'tactical' | 'castaway' | 'robot' | 'custom'>('default');
+  const [customModelName, setCustomModelName] = useState<string | null>(null);
+  const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [modelSuccessMsg, setModelSuccessMsg] = useState<string | null>(null);
+  const [customUrlInput, setCustomUrlInput] = useState<string>('');
+
+  const avatarControllerRef = useRef<{
+    loadCustomModelFromBuffer: (buffer: ArrayBuffer, name: string) => Promise<boolean>;
+    loadCustomModelFromUrl: (url: string, name?: string) => Promise<boolean>;
+    setSkinPreset: (preset: 'default' | 'tactical' | 'castaway' | 'robot') => void;
+    clearCustomModel: () => void;
+  } | null>(null);
 
   const toastTimerRef = useRef<any>(null);
   const showGatherToast = (text: string, icon: string = '✨') => {
@@ -809,13 +843,20 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       action: () => callbacksRef.current.onSwitchToTab('companion'),
     });
 
-    // 11. PLAYER 3D AVATAR (Survivor Character)
+    // 11. PLAYER 3D AVATAR (Survivor Character & Custom GLB Host)
     const playerGroup = new THREE.Group();
+    const proceduralAvatarGroup = new THREE.Group();
+    const customAvatarContainer = new THREE.Group();
+    playerGroup.add(proceduralAvatarGroup);
+    playerGroup.add(customAvatarContainer);
+
+    // Procedural avatar materials with preset support
     const shirtMat = new THREE.MeshStandardMaterial({ color: 0x2e5c54, roughness: 0.8 });
     const pantsMat = new THREE.MeshStandardMaterial({ color: 0x4a3b2c, roughness: 0.9 });
     const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0ac69, roughness: 0.7 });
     const hairMat = new THREE.MeshStandardMaterial({ color: 0x20150f, roughness: 0.9 });
     const packMat = new THREE.MeshStandardMaterial({ color: 0x7a4920, roughness: 0.8 });
+    const visorMat = new THREE.MeshStandardMaterial({ color: 0x00f5d4, emissive: 0x00f5d4, emissiveIntensity: 0.8, roughness: 0.2 });
 
     const playerTorso = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.32, 0.75, 8), shirtMat);
     playerTorso.position.y = 1.1;
@@ -840,8 +881,175 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     const rightArm = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.09, 0.65, 6), shirtMat);
     rightArm.position.set(0.45, 1.1, 0);
 
-    playerGroup.add(playerTorso, playerHead, playerHair, playerBackpack, leftLeg, rightLeg, leftArm, rightArm);
+    const visorMesh = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.1, 0.18), visorMat);
+    visorMesh.position.set(0, 1.72, 0.2);
+    visorMesh.visible = false;
+
+    proceduralAvatarGroup.add(
+      playerTorso,
+      playerHead,
+      playerHair,
+      playerBackpack,
+      leftLeg,
+      rightLeg,
+      leftArm,
+      rightArm,
+      visorMesh
+    );
     scene.add(playerGroup);
+
+    // Animation mixer reference for rigged GLB models
+    let customAnimMixer: THREE.AnimationMixer | null = null;
+    let customWalkAction: THREE.AnimationAction | null = null;
+    let customIdleAction: THREE.AnimationAction | null = null;
+    let hasCustomModel = false;
+
+    const applySkinPreset = (preset: 'default' | 'tactical' | 'castaway' | 'robot') => {
+      hasCustomModel = false;
+      customAvatarContainer.clear();
+      if (customAnimMixer) {
+        customAnimMixer.stopAllAction();
+        customAnimMixer = null;
+      }
+      proceduralAvatarGroup.visible = true;
+      visorMesh.visible = preset === 'robot';
+
+      if (preset === 'default') {
+        shirtMat.color.setHex(0x2e5c54);
+        pantsMat.color.setHex(0x4a3b2c);
+        hairMat.color.setHex(0x20150f);
+        packMat.color.setHex(0x7a4920);
+      } else if (preset === 'tactical') {
+        shirtMat.color.setHex(0x212529);
+        pantsMat.color.setHex(0x2b2d42);
+        hairMat.color.setHex(0x1a1a1a);
+        packMat.color.setHex(0x111111);
+      } else if (preset === 'castaway') {
+        shirtMat.color.setHex(0x1d3557);
+        pantsMat.color.setHex(0x8d775f);
+        hairMat.color.setHex(0x8c5e34);
+        packMat.color.setHex(0x403d39);
+      } else if (preset === 'robot') {
+        shirtMat.color.setHex(0x78909c);
+        pantsMat.color.setHex(0x37474f);
+        hairMat.color.setHex(0x263238);
+        packMat.color.setHex(0x00bcd4);
+      }
+    };
+
+    const processLoadedGltf = (gltf: any, name: string) => {
+      customAvatarContainer.clear();
+      if (customAnimMixer) {
+        customAnimMixer.stopAllAction();
+        customAnimMixer = null;
+      }
+
+      const model = gltf.scene;
+
+      // Auto scale model to survivor height (~1.85m)
+      const bbox = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      bbox.getSize(size);
+      const h = size.y > 0.05 ? size.y : 1;
+      const targetHeight = 1.85;
+      const scale = targetHeight / h;
+      model.scale.set(scale, scale, scale);
+
+      // Re-align origin so feet rest exactly on ground (y = 0)
+      const scaledBBox = new THREE.Box3().setFromObject(model);
+      model.position.y = -scaledBBox.min.y;
+      model.position.x = -(scaledBBox.min.x + scaledBBox.max.x) / 2;
+      model.position.z = -(scaledBBox.min.z + scaledBBox.max.z) / 2;
+
+      model.traverse((child: any) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+
+      customAvatarContainer.add(model);
+      proceduralAvatarGroup.visible = false;
+      hasCustomModel = true;
+
+      // Setup rigged animations if present
+      if (gltf.animations && gltf.animations.length > 0) {
+        customAnimMixer = new THREE.AnimationMixer(model);
+        const walkClip = gltf.animations.find((a: any) => /walk|run|move/i.test(a.name)) || gltf.animations[0];
+        const idleClip = gltf.animations.find((a: any) => /idle|stand/i.test(a.name));
+        if (walkClip) {
+          customWalkAction = customAnimMixer.clipAction(walkClip);
+        }
+        if (idleClip) {
+          customIdleAction = customAnimMixer.clipAction(idleClip);
+          customIdleAction.play();
+        } else if (customWalkAction) {
+          customWalkAction.play();
+        }
+      }
+
+      sound.playCraftSuccess();
+      hudCallbacksRef.current.showGatherToast(`✨ ${name} sikeresen beállítva fő karakterként!`, '👤');
+    };
+
+    const loadCustomModelFromBuffer = async (buffer: ArrayBuffer, name: string): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const loader = new GLTFLoader();
+        loader.parse(
+          buffer,
+          '',
+          (gltf) => {
+            processLoadedGltf(gltf, name);
+            resolve(true);
+          },
+          (err) => {
+            console.error('Error parsing GLTF:', err);
+            hudCallbacksRef.current.triggerFloatingNotice('Nem sikerült feldolgozni a 3D modellt!', 'warn');
+            resolve(false);
+          }
+        );
+      });
+    };
+
+    const loadCustomModelFromUrl = async (url: string, name: string = '3D Karakter'): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const loader = new GLTFLoader();
+        loader.load(
+          url,
+          (gltf) => {
+            processLoadedGltf(gltf, name);
+            resolve(true);
+          },
+          undefined,
+          (err) => {
+            console.error('Error loading GLTF from URL:', err);
+            hudCallbacksRef.current.triggerFloatingNotice('Nem sikerült betölteni a modellt az URL címről!', 'warn');
+            resolve(false);
+          }
+        );
+      });
+    };
+
+    avatarControllerRef.current = {
+      loadCustomModelFromBuffer,
+      loadCustomModelFromUrl,
+      setSkinPreset: applySkinPreset,
+      clearCustomModel: () => {
+        applySkinPreset('default');
+      },
+    };
+
+    // Load saved avatar model from IndexedDB on startup if available
+    getSavedCustomModel().then((saved) => {
+      if (saved && saved.buffer) {
+        loadCustomModelFromBuffer(saved.buffer, saved.name).then((ok) => {
+          if (ok) {
+            setActiveSkin('custom');
+            setCustomModelName(saved.name);
+          }
+        });
+      }
+    });
 
     // Camera Orbit State (horizontal yaw, vertical pitch, distance)
     const cam = {
@@ -1219,6 +1427,24 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         rightArm.rotation.x = -Math.sin(playerArmSwing * Math.PI) * 1.6;
       }
 
+      // Skeletal animations or procedural bobbing for custom GLB models
+      if (customAnimMixer) {
+        customAnimMixer.update(dt);
+        if (customWalkAction && customIdleAction) {
+          if (isMoving && !customWalkAction.isRunning()) {
+            customIdleAction.fadeOut(0.2);
+            customWalkAction.reset().fadeIn(0.2).play();
+          } else if (!isMoving && customWalkAction.isRunning()) {
+            customWalkAction.fadeOut(0.2);
+            customIdleAction.reset().fadeIn(0.2).play();
+          }
+        }
+      } else if (hasCustomModel) {
+        // Dynamic tilt & stride bobbing for static 3D models (like Tripo exports)
+        customAvatarContainer.position.y = isMoving ? Math.abs(Math.sin(time * 0.014)) * 0.07 : 0;
+        customAvatarContainer.rotation.z = isMoving ? Math.sin(time * 0.011) * 0.05 : 0;
+      }
+
       if (isMoving) {
         const walkCycle = time * 0.012 * (isSprinting ? 1.6 : 1.1);
         leftLeg.rotation.x = Math.sin(walkCycle) * 0.55;
@@ -1381,6 +1607,76 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   }, [cameraMode]);
 
   // Touch button action trigger
+  // Avatar management handlers
+  const handleFileUpload = async (file: File) => {
+    if (!file.name.match(/\.(glb|gltf)$/i)) {
+      setModelError('Kérlek .glb vagy .gltf kiterjesztésű 3D modellt válassz!');
+      return;
+    }
+    setIsModelLoading(true);
+    setModelError(null);
+    setModelSuccessMsg(null);
+    try {
+      const record = await saveCustomModel(file);
+      if (avatarControllerRef.current) {
+        const ok = await avatarControllerRef.current.loadCustomModelFromBuffer(record.buffer, file.name);
+        if (ok) {
+          setActiveSkin('custom');
+          setCustomModelName(file.name);
+          setModelSuccessMsg(`"${file.name}" sikeresen beállítva és elmentve!`);
+        } else {
+          setModelError('A 3D modell betöltése sikertelen volt.');
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      setModelError(err.message || 'Hiba történt a fájl mentésekor.');
+    } finally {
+      setIsModelLoading(false);
+    }
+  };
+
+  const handleUrlLoad = async () => {
+    if (!customUrlInput.trim()) return;
+    setIsModelLoading(true);
+    setModelError(null);
+    setModelSuccessMsg(null);
+    try {
+      if (avatarControllerRef.current) {
+        const ok = await avatarControllerRef.current.loadCustomModelFromUrl(customUrlInput.trim(), 'Webes GLB Modell');
+        if (ok) {
+          setActiveSkin('custom');
+          setCustomModelName('Webes GLB Modell');
+          setModelSuccessMsg('A 3D modell sikeresen betöltve az URL-ről!');
+        } else {
+          setModelError('Nem sikerült betölteni a 3D modellt erről a webcímről.');
+        }
+      }
+    } catch (err: any) {
+      setModelError('Hiba történt a letöltés során.');
+    } finally {
+      setIsModelLoading(false);
+    }
+  };
+
+  const handleResetToDefault = async () => {
+    await clearSavedCustomModel();
+    if (avatarControllerRef.current) {
+      avatarControllerRef.current.clearCustomModel();
+    }
+    setActiveSkin('default');
+    setCustomModelName(null);
+    setModelSuccessMsg('Visszaállítva az alapértelmezett túlélő karakterre.');
+  };
+
+  const handleSelectPreset = (preset: 'default' | 'tactical' | 'castaway' | 'robot') => {
+    if (avatarControllerRef.current) {
+      avatarControllerRef.current.setSkinPreset(preset);
+    }
+    setActiveSkin(preset);
+    sound.playClick();
+  };
+
   const handleTriggerAction = () => {
     sound.playClick();
     window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' }));
@@ -1422,6 +1718,26 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           >
             <Smartphone className="w-4 h-4" />
             <span className="hidden sm:inline">Vezérlő</span>
+          </button>
+
+          {/* Character 3D Model Customization button */}
+          <button
+            onClick={() => {
+              sound.playClick();
+              setCharacterModalOpen(true);
+            }}
+            className={`p-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition shadow ${
+              activeSkin === 'custom'
+                ? 'bg-amber-600 hover:bg-amber-500 border-amber-400 text-white ring-1 ring-amber-400/50'
+                : 'bg-slate-900/90 hover:bg-slate-800 border-stone-700 text-stone-300'
+            }`}
+            title="3D Karakter Modell & Testreszabás (Tripo3D, GLB feltöltés)"
+          >
+            <User className="w-4 h-4 text-amber-400" />
+            <span className="hidden sm:inline">Karakter</span>
+            {activeSkin === 'custom' && (
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-0.5" />
+            )}
           </button>
 
           {/* Controls Help button */}
@@ -1896,6 +2212,222 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
             >
               Értem, vissza a túléléshez
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3D Character Customization & Tripo/GLB Loader Modal */}
+      {characterModalOpen && (
+        <div
+          className="absolute inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+          onClick={() => setCharacterModalOpen(false)}
+        >
+          <div
+            className="bg-slate-900 border border-amber-500/70 rounded-2xl p-5 sm:p-6 max-w-xl w-full shadow-2xl my-auto animate-in fade-in zoom-in-95 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-950/80 border border-amber-500/60 flex items-center justify-center text-amber-400">
+                  <User className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white tracking-wide">
+                    3D Karakter Modell & Testreszabás
+                  </h3>
+                  <p className="text-[11px] text-stone-400">
+                    Importálj saját Tripo3D / GLB modellt vagy válassz stílust
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setCharacterModalOpen(false)}
+                className="p-1.5 rounded-lg hover:bg-stone-800 text-stone-400 hover:text-white transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Tripo3D Free Export Helper Box */}
+            <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl p-3.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                  <ExternalLink className="w-4 h-4 text-amber-400" />
+                  Tripo3D modell ingyenes megszerzése (fizetés nélkül):
+                </span>
+                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/30 font-mono">
+                  99d4f46c...
+                </span>
+              </div>
+              <p className="text-[11px] text-stone-300 leading-relaxed">
+                Mivel a Tripo3D ingyenes módban nem engedi az export gombot és külső letöltést, a saját böngésződből <strong>1 perc alatt ingyen lementheted</strong>:
+              </p>
+              <ol className="text-[11px] text-stone-300 space-y-1 list-decimal list-inside pl-1 leading-relaxed bg-black/40 p-2.5 rounded-lg border border-stone-800/80">
+                <li>Nyisd meg a böngésződben a modellt: <a href="https://studio.tripo3d.ai/3d-model/99d4f46c-d8bc-4e3c-8bb6-fec3c4441762" target="_blank" rel="noreferrer" className="text-cyan-400 underline font-mono text-[10px]">studio.tripo3d.ai/...</a></li>
+                <li>Nyomd meg az <kbd className="px-1.5 py-0.5 bg-stone-800 rounded text-amber-300 font-mono text-[10px]">F12</kbd> gombot (vagy jobb gomb → <em>Vizsgálat / Inspect</em>).</li>
+                <li>Kattints a felugró ablakban a <strong>Network (Hálózat)</strong> fülre.</li>
+                <li>A szűrő (Filter) mezőbe írd be: <code className="bg-stone-800 text-emerald-300 px-1 rounded">glb</code></li>
+                <li>Frissítsd a lapot (<kbd className="px-1 py-0.5 bg-stone-800 rounded text-stone-200 text-[10px]">F5</kbd>).</li>
+                <li>Kattints jobb gombbal a megjelenő <code className="text-emerald-400">.glb</code> sorra → <strong>Open in new tab</strong> vagy <strong>Save as...</strong>!</li>
+                <li>A lementett <code className="text-white">.glb</code> fájlt húzd be az alábbi dobozba!</li>
+              </ol>
+            </div>
+
+            {/* Drag & Drop File Upload Area */}
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.add('border-amber-400', 'bg-amber-950/20');
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-amber-400', 'bg-amber-950/20');
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-amber-400', 'bg-amber-950/20');
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                  handleFileUpload(e.dataTransfer.files[0]);
+                }
+              }}
+              className="border-2 border-dashed border-stone-700 hover:border-amber-500/80 rounded-xl p-5 text-center transition flex flex-col items-center justify-center cursor-pointer bg-slate-950/60 relative group"
+            >
+              <input
+                type="file"
+                accept=".glb,.gltf"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files[0]) {
+                    handleFileUpload(e.target.files[0]);
+                  }
+                }}
+                className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                title="Válassz ki egy .glb vagy .gltf fájlt"
+              />
+              <Upload className="w-8 h-8 text-amber-400 group-hover:scale-110 transition mb-2" />
+              <p className="text-xs font-bold text-white mb-0.5">
+                Húzd ide a letöltött <span className="text-amber-400">.GLB</span> vagy <span className="text-amber-400">.GLTF</span> fájlt
+              </p>
+              <p className="text-[11px] text-stone-400">
+                vagy kattints a tallózáshoz a számítógépedről / telefonodról
+              </p>
+              <span className="mt-2 text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60">
+                Automatikus méretezés + Ütközéskezelés + Mentés IndexedDB-be
+              </span>
+            </div>
+
+            {/* Direct GLB URL Input */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-semibold text-stone-300 flex items-center justify-between">
+                <span>Vagy töltsd be közvetlen webcímről (.glb link):</span>
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  placeholder="https://example.com/character.glb"
+                  value={customUrlInput}
+                  onChange={(e) => setCustomUrlInput(e.target.value)}
+                  className="flex-1 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-lg px-3 py-1.5 text-xs text-white placeholder-stone-600 outline-none transition"
+                />
+                <button
+                  onClick={handleUrlLoad}
+                  disabled={isModelLoading || !customUrlInput.trim()}
+                  className="bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg transition flex items-center gap-1.5 shrink-0"
+                >
+                  {isModelLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  <span>Betöltés</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Status Messages */}
+            {isModelLoading && (
+              <div className="p-3 bg-cyan-950/60 border border-cyan-600/60 rounded-lg flex items-center gap-2.5 text-xs text-cyan-200 animate-pulse">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-400 shrink-0" />
+                <span>3D modell feldolgozása, méretezése és beállítása a karakterhez...</span>
+              </div>
+            )}
+            {modelSuccessMsg && (
+              <div className="p-2.5 bg-emerald-950/60 border border-emerald-600/60 rounded-lg flex items-center gap-2 text-xs text-emerald-200">
+                <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{modelSuccessMsg}</span>
+              </div>
+            )}
+            {modelError && (
+              <div className="p-2.5 bg-red-950/60 border border-red-600/60 rounded-lg flex items-center gap-2 text-xs text-red-200">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                <span>{modelError}</span>
+              </div>
+            )}
+
+            {/* Built-in Character Skin Presets */}
+            <div className="space-y-2 pt-1 border-t border-stone-800">
+              <span className="text-xs font-bold text-stone-200 flex items-center gap-1.5">
+                <Palette className="w-4 h-4 text-emerald-400" />
+                Beépített túlélő stílusok (Azonnali váltás):
+              </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { id: 'default', label: 'Túlélő Felfedező', icon: '🌴', desc: 'Klasszikus zöld ing' },
+                  { id: 'tactical', label: 'Taktikai Operatív', icon: '🪖', desc: 'Fekete kommandós' },
+                  { id: 'castaway', label: 'Hajótörött Matróz', icon: '⚓', desc: 'Kék tengerész' },
+                  { id: 'robot', label: 'Kiborg Exosuit', icon: '🤖', desc: 'Sci-fi páncélzat' },
+                ].map((skin) => (
+                  <button
+                    key={skin.id}
+                    onClick={() => handleSelectPreset(skin.id as any)}
+                    className={`p-2.5 rounded-xl border text-left transition flex flex-col justify-between ${
+                      activeSkin === skin.id
+                        ? 'bg-emerald-950/80 border-emerald-500 text-white shadow-lg ring-1 ring-emerald-500/50'
+                        : 'bg-stone-950/80 hover:bg-stone-800/80 border-stone-800 text-stone-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-lg">{skin.icon}</span>
+                      {activeSkin === skin.id && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                    </div>
+                    <div>
+                      <strong className="text-[11px] block text-stone-100">{skin.label}</strong>
+                      <span className="text-[10px] text-stone-400">{skin.desc}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer with Reset to Default */}
+            <div className="flex items-center justify-between pt-2 border-t border-stone-800">
+              {activeSkin === 'custom' && customModelName ? (
+                <div className="flex items-center gap-2 text-xs text-amber-300">
+                  <span className="font-mono text-[10px] bg-amber-950/80 px-2 py-0.5 rounded border border-amber-600/60 truncate max-w-[200px]">
+                    Aktív: {customModelName}
+                  </span>
+                  <button
+                    onClick={handleResetToDefault}
+                    className="text-stone-400 hover:text-red-400 text-xs flex items-center gap-1 transition"
+                    title="Egyéni modell törlése"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Törlés</span>
+                  </button>
+                </div>
+              ) : (
+                <span className="text-[11px] text-stone-400">
+                  Stílus: <strong className="text-stone-200">{activeSkin.toUpperCase()}</strong>
+                </span>
+              )}
+
+              <button
+                onClick={() => setCharacterModalOpen(false)}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-lg transition"
+              >
+                Kész / Vissza a játékba
+              </button>
+            </div>
           </div>
         </div>
       )}
