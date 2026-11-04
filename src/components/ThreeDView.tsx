@@ -91,7 +91,9 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   const [cameraMode, setCameraMode] = useState<'tps' | 'fps'>('tps');
   const [interactionPrompt, setInteractionPrompt] = useState<string | null>(null);
   const [controlsHelpOpen, setControlsHelpOpen] = useState<boolean>(false);
-  const [currentZoneName, setCurrentZoneName] = useState<string>('Partvidék & Sekély Vizek');
+  const [currentZoneName, setCurrentZoneName] = useState<string>('Partvidék & Sekély Zátonyok (+4m)');
+  const [playerGps, setPlayerGps] = useState<{ x: number; z: number; alt: number }>({ x: 80, z: 1255, alt: 4 });
+  const [showWaypointsMenu, setShowWaypointsMenu] = useState<boolean>(false);
   
   // Interactive 3D object clicking state
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
@@ -175,6 +177,15 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   });
 
   const resetCameraRef = useRef<() => void>(() => {});
+  const teleportPlayerRef = useRef<(x: number, z: number, zoneName?: string) => void>(() => {});
+
+  const WAYPOINTS = [
+    { id: 'coast', name: '🏖️ Kezdőtábor & Bázis', x: 80, z: 1255, elev: '+4m', desc: 'Partvidék, Menedék, Tűz' },
+    { id: 'rainforest', name: '🌴 Dzsungel & Roncs', x: -380, z: 160, elev: '+65m', desc: 'Trópusi folyóvölgy, Repülő' },
+    { id: 'swamp', name: '🐊 Mocsárvidék', x: 650, z: 650, elev: '+10m', desc: 'Iszapmező, Mangrove, Orchidea' },
+    { id: 'ruins', name: '🏛️ Ősi Romok Kapu', x: 720, z: -450, elev: '+255m', desc: 'Megalitikus portál, Kristály' },
+    { id: 'volcano', name: '🌋 Vulkán Csúcs (+850m)', x: -80, z: -690, elev: '+850m', desc: 'Legmagasabb pont, Kaldera' },
+  ];
 
   // Callbacks ref to avoid rebuilding WebGL scene on state changes
   const callbacksRef = useRef({
@@ -196,14 +207,14 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // 1. Scene, Camera, Renderer
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0c1926);
-    scene.fog = new THREE.FogExp2(0x0c1926, 0.0075);
+    scene.background = new THREE.Color(0x8cb8c6); // Tropical atmospheric daylight sky
+    scene.fog = new THREE.Fog(0x8cb8c6, 600, 6500); // Atmospheric perspective fog across 10 km2
 
     const camera = new THREE.PerspectiveCamera(
       60,
       container.clientWidth / container.clientHeight,
-      0.1,
-      800
+      0.5,
+      7500 // Far clipping plane adapted for 10 km2 visibility
     );
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -213,59 +224,155 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     renderer.toneMappingExposure = 1.15;
     container.appendChild(renderer.domElement);
 
-    // 2. Lighting (Warm sun + Sky hemisphere)
-    const hemiLight = new THREE.HemisphereLight(0x52d6ec, 0x1a3826, 0.9);
+    // 2. Lighting (Warm sun + Sky hemisphere across large terrain)
+    const hemiLight = new THREE.HemisphereLight(0xbbeeff, 0x224422, 0.85);
     scene.add(hemiLight);
 
-    const sunLight = new THREE.DirectionalLight(0xffeedd, 1.4);
-    sunLight.position.set(60, 100, 40);
+    const sunLight = new THREE.DirectionalLight(0xffeedd, 1.35);
+    sunLight.position.set(600, 1600, 800);
     scene.add(sunLight);
 
-    const ambientLight = new THREE.AmbientLight(0x223344, 0.45);
+    const ambientLight = new THREE.AmbientLight(0x334455, 0.4);
     scene.add(ambientLight);
 
-    // 3. Procedural Island Terrain Generation
-    const terrainSize = 300;
-    const terrainSegments = 90;
+    // Analytical Ground Height Function (10 km² island: R ~ 1780m, max +850m summit, min -30m depth)
+    const getGroundHeight = (x: number, z: number): number => {
+      const dist = Math.hypot(x, z);
+      const islandRadius = 1780;
+
+      // Ocean floor beyond coastal reef slopes down to -30m
+      if (dist > islandRadius) {
+        const dropDist = dist - islandRadius;
+        return -Math.min(30, (dropDist / 350) * 30);
+      }
+
+      // Smooth radial island slope from coastline (0m) toward interior
+      const normDist = dist / islandRadius;
+      const baseElev = Math.pow(Math.cos(normDist * Math.PI * 0.5), 1.25) * 65;
+
+      // 1. Kihűlt Vulkán & Kaldera (North: center x: -80, z: -690, radius ~750m, max peak +850m)
+      const vdx = x - (-80);
+      const vdz = z - (-690);
+      const vDist = Math.hypot(vdx, vdz);
+      let volcanoH = 0;
+      if (vDist < 750) {
+        const vNorm = vDist / 750;
+        const cone = Math.pow(Math.cos(vNorm * Math.PI * 0.5), 1.6) * 785;
+        let craterDepression = 0;
+        if (vDist < 120) {
+          const cNorm = vDist / 120;
+          craterDepression = (1 - cNorm * cNorm) * 85;
+        }
+        volcanoH = Math.max(0, cone - craterDepression);
+      }
+
+      // 2. Ősi Romok & Templomhegy Fennsík (North-East: x: 720, z: -450, radius ~460m)
+      const rdx = x - 720;
+      const rdz = z - (-450);
+      const rDist = Math.hypot(rdx, rdz);
+      let ruinsH = 0;
+      if (rDist < 460) {
+        const rNorm = rDist / 460;
+        ruinsH = Math.pow(Math.cos(rNorm * Math.PI * 0.5), 0.7) * 260;
+      }
+
+      // 3. Sűrű Trópusi Esőerdő & Folyóvölgy
+      const jdx = x - (-350);
+      const jdz = z - 200;
+      const jDist = Math.hypot(jdx, jdz);
+      let jungleH = 0;
+      if (jDist < 600) {
+        jungleH = Math.cos((jDist / 600) * (Math.PI * 0.5)) * 95;
+      }
+      // Winding jungle river carving down to the southern coast
+      const riverPathX = Math.sin(z * 0.006) * 140 - 100;
+      const distToRiver = Math.abs(x - riverPathX);
+      let riverCarve = 0;
+      if (distToRiver < 70 && z > -250 && z < 1400) {
+        const riverFactor = Math.cos((distToRiver / 70) * (Math.PI * 0.5));
+        riverCarve = riverFactor * 16;
+      }
+
+      // 4. Mocsárvidék & Iszapmező (South-East: x: 650, z: 650, radius ~520m)
+      const sdx = x - 650;
+      const sdz = z - 650;
+      const sDist = Math.hypot(sdx, sdz);
+      let swampFlatten = 0;
+      if (sDist < 520) {
+        swampFlatten = Math.cos((sDist / 520) * (Math.PI * 0.5)) * 14;
+      }
+
+      // Natural fractal micro-topography (hills, ridges, dunes)
+      const microH =
+        Math.sin(x * 0.012) * Math.cos(z * 0.012) * 12 +
+        Math.sin(x * 0.025 + 1.2) * Math.cos(z * 0.025 + 0.8) * 5 +
+        Math.sin(x * 0.05) * 1.8;
+
+      let totalH = baseElev + volcanoH + ruinsH + jungleH - riverCarve - swampFlatten + microH;
+
+      // Soft coastal shelf transition (1550m - 1780m)
+      if (dist > 1550) {
+        const blend = (islandRadius - dist) / (islandRadius - 1550);
+        totalH = totalH * Math.max(0, blend);
+      }
+
+      return totalH;
+    };
+
+    // 3. Procedural 10 km² Island Terrain with Biome Vertex Colors
+    const terrainSize = 4200; // 4.2 km x 4.2 km mesh covering full 10 km² island & shelf
+    const terrainSegments = 160; // 25,600 vertices - optimal 60 FPS performance
     const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, terrainSegments, terrainSegments);
     terrainGeo.rotateX(-Math.PI / 2);
 
     const posAttr = terrainGeo.attributes.position;
+    const vertexColors: number[] = [];
+
     for (let i = 0; i < posAttr.count; i++) {
       const x = posAttr.getX(i);
       const z = posAttr.getZ(i);
-      const distFromCenter = Math.sqrt(x * x + z * z);
+      const h = getGroundHeight(x, z);
+      posAttr.setY(i, h);
 
-      let h = 0;
-      if (distFromCenter < 120) {
-        const factor = Math.cos((distFromCenter / 120) * (Math.PI / 2));
-        h = Math.pow(factor, 1.4) * 28;
+      // Biome-based procedural vertex coloring
+      const dist = Math.hypot(x, z);
+      const color = new THREE.Color();
 
-        // Northern volcanic mountain
-        if (z < -20 && Math.abs(x) < 50) {
-          const mDist = Math.sqrt(x * x + (z + 65) * (z + 65));
-          if (mDist < 45) {
-            h += Math.cos((mDist / 45) * (Math.PI / 2)) * 38;
-          }
+      if (h < 0.2) {
+        // Coral reef shallows / submerged shelf
+        color.setHex(0x1a7585);
+      } else if (h < 18 && dist > 1100) {
+        // Golden beach sand & coastal dunes
+        color.setHex(0xd4b483);
+      } else if (x > 250 && z > 250 && h < 45) {
+        // Swamp mud & mangrove green
+        color.setHex(0x3e4d28);
+      } else if (h > 600) {
+        // Volcanic Peak & Caldera (Obsidian, basalt & burnt sulfur mineral)
+        if (Math.hypot(x - (-80), z - (-690)) < 110) {
+          color.setHex(0x822a1f); // Caldera center burnt magma crust
+        } else {
+          color.setHex(0x231a1a); // Dark volcanic basalt
         }
-
-        // River valley
-        const riverPath = Math.sin(z * 0.05) * 12;
-        if (Math.abs(x - riverPath) < 7 && z > -30) {
-          h -= 4;
-        }
-
-        h += Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2.2;
+      } else if (h > 350) {
+        // High mountain rocky ridge
+        color.setHex(0x4a4d52);
+      } else if (h > 170 && x > 400 && z < -150) {
+        // Ancient Temple Highland stone
+        color.setHex(0x4a5d56);
       } else {
-        h = -8 - (distFromCenter - 120) * 0.15;
+        // Lush Tropical Rainforest emerald
+        color.setHex(0x235d32);
       }
 
-      posAttr.setY(i, h);
+      vertexColors.push(color.r, color.g, color.b);
     }
+
+    terrainGeo.setAttribute('color', new THREE.Float32BufferAttribute(vertexColors, 3));
     terrainGeo.computeVertexNormals();
 
     const terrainMat = new THREE.MeshStandardMaterial({
-      color: 0x2e6b3e,
+      vertexColors: true,
       roughness: 0.85,
       metalness: 0.1,
       flatShading: true,
@@ -273,35 +380,19 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     scene.add(terrainMesh);
 
-    // 4. Animated Ocean Water Surface
-    const waterGeo = new THREE.PlaneGeometry(500, 500, 40, 40);
+    // 4. Animated Ocean Water Surface (5000m x 5000m)
+    const waterGeo = new THREE.PlaneGeometry(5000, 5000, 32, 32);
     waterGeo.rotateX(-Math.PI / 2);
     const waterMat = new THREE.MeshStandardMaterial({
       color: 0x0a6677,
-      roughness: 0.2,
-      metalness: 0.3,
+      roughness: 0.18,
+      metalness: 0.35,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.85,
     });
     const waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    waterMesh.position.y = 1.2;
+    waterMesh.position.y = 0.5;
     scene.add(waterMesh);
-
-    // Height function helper
-    const getGroundHeight = (x: number, z: number): number => {
-      const distFromCenter = Math.sqrt(x * x + z * z);
-      if (distFromCenter >= 120) return 0;
-      const factor = Math.cos((distFromCenter / 120) * (Math.PI / 2));
-      let h = Math.pow(factor, 1.4) * 28;
-      if (z < -20 && Math.abs(x) < 50) {
-        const mDist = Math.sqrt(x * x + (z + 65) * (z + 65));
-        if (mDist < 45) {
-          h += Math.cos((mDist / 45) * (Math.PI / 2)) * 38;
-        }
-      }
-      h += Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2.2;
-      return Math.max(0.5, h);
-    };
 
     const interactables: InteractiveProp[] = [];
 
@@ -329,7 +420,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     roof.rotateY(Math.PI / 4);
     baseGroup.add(roof);
 
-    baseGroup.position.set(18, getGroundHeight(18, 75), 75);
+    baseGroup.position.set(80, getGroundHeight(80, 1250), 1250);
     scene.add(baseGroup);
 
     const registerInteractable = (prop: InteractiveProp) => {
@@ -349,7 +440,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       action: () => callbacksRef.current.onSwitchToTab('base'),
     });
 
-    // Campfire with animated pointlight
+    // Campfire with animated pointlight (Coast: x: 74, z: 1244)
     const fireGroup = new THREE.Group();
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.9 });
     for (let r = 0; r < 8; r++) {
@@ -362,7 +453,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     firePointLight.position.set(0, 1.0, 0);
     fireGroup.add(firePointLight);
 
-    fireGroup.position.set(12, getGroundHeight(12, 73), 73);
+    fireGroup.position.set(74, getGroundHeight(74, 1244), 1244);
     scene.add(fireGroup);
 
     registerInteractable({
@@ -379,7 +470,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       },
     });
 
-    // 6. Crashed Twin-Engine Cargo Plane (Jungle: x: -5, z: 12)
+    // 6. Crashed Twin-Engine Cargo Plane (Jungle: x: -380, z: 160)
     const planeGroup = new THREE.Group();
     const metalMat = new THREE.MeshStandardMaterial({
       color: 0x8a9ba8,
@@ -414,7 +505,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     tailFin.position.set(-8, 2.2, 0);
     planeGroup.add(tailFin);
 
-    planeGroup.position.set(-5, getGroundHeight(-5, 12) + 1.2, 12);
+    planeGroup.position.set(-380, getGroundHeight(-380, 160) + 1.2, 160);
     planeGroup.rotateY(0.6);
     scene.add(planeGroup);
 
@@ -427,7 +518,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       action: () => callbacksRef.current.onSwitchToTab('escape'),
     });
 
-    // 7. Ancient Ruins Monolith & Stone Portal (North-East: x: 45, z: -25)
+    // 7. Ancient Ruins Monolith & Stone Portal (North-East: x: 720, z: -450)
     const ruinsGroup = new THREE.Group();
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0x485058, roughness: 0.95 });
     const runeGlowMat = new THREE.MeshStandardMaterial({
@@ -437,26 +528,66 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       roughness: 0.2,
     });
 
-    const pillarL = new THREE.Mesh(new THREE.BoxGeometry(1.8, 9, 1.8), stoneMat);
-    pillarL.position.set(-3.5, 4.5, 0);
-    const pillarR = new THREE.Mesh(new THREE.BoxGeometry(1.8, 9, 1.8), stoneMat);
-    pillarR.position.set(3.5, 4.5, 0);
-    const lintel = new THREE.Mesh(new THREE.BoxGeometry(10, 1.8, 2.2), stoneMat);
-    lintel.position.set(0, 9.2, 0);
-    const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(1.2), runeGlowMat);
-    crystal.position.set(0, 5, 0);
+    const pillarL = new THREE.Mesh(new THREE.BoxGeometry(2.4, 12, 2.4), stoneMat);
+    pillarL.position.set(-4.5, 6, 0);
+    const pillarR = new THREE.Mesh(new THREE.BoxGeometry(2.4, 12, 2.4), stoneMat);
+    pillarR.position.set(4.5, 6, 0);
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(13, 2.2, 2.8), stoneMat);
+    lintel.position.set(0, 12.2, 0);
+    const crystal = new THREE.Mesh(new THREE.OctahedronGeometry(1.6), runeGlowMat);
+    crystal.position.set(0, 7, 0);
 
     ruinsGroup.add(pillarL, pillarR, lintel, crystal);
-    ruinsGroup.position.set(45, getGroundHeight(45, -25), -25);
+    ruinsGroup.position.set(720, getGroundHeight(720, -450), -450);
     scene.add(ruinsGroup);
 
     registerInteractable({
       id: 'ruins',
-      nameHu: 'Ősi Romok Misztikus Kőkapuja',
+      nameHu: 'Ősi Romok Misztikus Kőkapuja (+255m)',
       mesh: ruinsGroup,
       type: 'ruins',
       resourceLabel: 'Rejtvények & Titán ötvözet',
       action: () => callbacksRef.current.onSwitchToTab('ruins'),
+    });
+
+    // 8. Volcanic Caldera Summit Station & Magma Fissure (North Peak: x: -80, z: -690) Altitude +850m
+    const volcanoSummitGroup = new THREE.Group();
+    const basaltPillarMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1e, roughness: 0.95 });
+    const magmaFissureMat = new THREE.MeshStandardMaterial({
+      color: 0xff3300,
+      emissive: 0xff1e00,
+      emissiveIntensity: 1.5,
+      roughness: 0.2,
+    });
+
+    const spire = new THREE.Mesh(new THREE.ConeGeometry(7.0, 22, 6), basaltPillarMat);
+    spire.position.y = 11;
+    volcanoSummitGroup.add(spire);
+
+    const magmaPool = new THREE.Mesh(new THREE.CylinderGeometry(10, 10, 0.8, 12), magmaFissureMat);
+    magmaPool.position.y = 0.4;
+    volcanoSummitGroup.add(magmaPool);
+
+    const summitLight = new THREE.PointLight(0xff4500, 4.0, 150);
+    summitLight.position.set(0, 15, 0);
+    volcanoSummitGroup.add(summitLight);
+
+    volcanoSummitGroup.position.set(-80, getGroundHeight(-80, -690), -690);
+    scene.add(volcanoSummitGroup);
+
+    registerInteractable({
+      id: 'volcano_summit',
+      nameHu: 'Vulkán Kaldera Csúcspont (Magasság: +850m)',
+      mesh: volcanoSummitGroup,
+      type: 'ruins',
+      resourceLabel: 'Obszidián szikla & Kénérc (+850m)',
+      action: () => {
+        sound.playMine();
+        callbacksRef.current.onUpdateInventory('flint_shard', 3);
+        callbacksRef.current.onUpdateInventory('scrap_metal', 2);
+        callbacksRef.current.onLogEvent('Elérted a sziget legmagasabb pontját: +850m Vulkáni Csúcs és Kaldera!');
+        hudCallbacksRef.current.showGatherToast('🌋 Vulkán Csúcs (+850m) megérkezés!', '🌋');
+      },
     });
 
     // 3D Harvest Particles Pool
@@ -503,25 +634,32 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // 8. CLICKABLE 3D PALM TREES (Trunks, Fronds & Coconuts)
     const palmPositions = [
-      { x: 10, z: 65 },
-      { x: 26, z: 70 },
-      { x: 30, z: 60 },
-      { x: 5, z: 50 },
-      { x: -15, z: 65 },
-      { x: -25, z: 50 },
-      { x: 40, z: 45 },
-      { x: -8, z: 30 },
-      { x: 15, z: 20 },
-      { x: -30, z: 20 },
-      { x: -40, z: 35 },
-      { x: 20, z: 40 },
-      { x: 0, z: 78 },
-      { x: -20, z: 82 },
+      // Coastline & Base Shelter Groves (x: 80, z: 1250)
+      { x: 95, z: 1240 },
+      { x: 60, z: 1260 },
+      { x: 120, z: 1230 },
+      { x: 45, z: 1280 },
+      { x: 110, z: 1270 },
+      { x: 140, z: 1220 },
+      { x: 25, z: 1290 },
+      { x: -60, z: 1350 },
+      { x: -140, z: 1300 },
+      { x: 200, z: 1200 },
+      // Central Rainforest groves
+      { x: -360, z: 180 },
+      { x: -410, z: 140 },
+      { x: -340, z: 130 },
+      { x: -420, z: 200 },
+      { x: -300, z: 220 },
+      // Swamp Mudflat mangroves
+      { x: 620, z: 640 },
+      { x: 670, z: 680 },
+      { x: 640, z: 610 },
     ];
 
-    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.48, 6.5, 7);
-    const frondGeo = new THREE.ConeGeometry(3.2, 1.4, 6);
-    const coconutGeo = new THREE.SphereGeometry(0.22, 6, 6);
+    const trunkGeo = new THREE.CylinderGeometry(0.35, 0.55, 7.5, 7);
+    const frondGeo = new THREE.ConeGeometry(3.8, 1.6, 6);
+    const coconutGeo = new THREE.SphereGeometry(0.25, 6, 6);
 
     const palmBarkMat = new THREE.MeshStandardMaterial({ color: 0x5a3d28, roughness: 0.85 });
     const palmFrondMat = new THREE.MeshStandardMaterial({ color: 0x1e6f24, roughness: 0.75 });
@@ -531,20 +669,20 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       const tree = new THREE.Group();
       // Curved trunk
       const trunk = new THREE.Mesh(trunkGeo, palmBarkMat);
-      trunk.position.y = 3.25;
+      trunk.position.y = 3.75;
       trunk.rotateZ((idx % 2 === 0 ? 1 : -1) * 0.1);
       tree.add(trunk);
 
       // Fronds canopy
       const fronds = new THREE.Mesh(frondGeo, palmFrondMat);
-      fronds.position.set(trunk.position.x, 6.5, trunk.position.z);
+      fronds.position.set(trunk.position.x, 7.5, trunk.position.z);
       tree.add(fronds);
 
       // Coconuts
       for (let c = 0; c < 3; c++) {
         const nut = new THREE.Mesh(coconutGeo, coconutMat);
         const a = (c / 3) * Math.PI * 2;
-        nut.position.set(trunk.position.x + Math.cos(a) * 0.45, 5.8, trunk.position.z + Math.sin(a) * 0.45);
+        nut.position.set(trunk.position.x + Math.cos(a) * 0.5, 6.8, trunk.position.z + Math.sin(a) * 0.5);
         tree.add(nut);
       }
 
@@ -586,16 +724,24 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // 9. CLICKABLE 3D MINERAL & VOLCANIC ROCKS
     const rockPositions = [
-      { x: 22, z: 78, scale: 1.4 },
-      { x: -18, z: 78, scale: 1.2 },
-      { x: 38, z: 62, scale: 1.6 },
-      { x: -28, z: 38, scale: 1.5 },
-      { x: 25, z: 10, scale: 1.7 },
-      { x: -12, z: -10, scale: 1.3 },
-      { x: 35, z: -35, scale: 1.8 },
-      { x: -20, z: -40, scale: 1.9 },
-      { x: 10, z: -45, scale: 1.6 },
-      { x: 48, z: 15, scale: 1.4 },
+      // Coastal mineral rocks
+      { x: 88, z: 1235, scale: 2.2 },
+      { x: 50, z: 1265, scale: 2.5 },
+      { x: 135, z: 1260, scale: 3.0 },
+      // Rainforest flint
+      { x: -370, z: 145, scale: 2.8 },
+      { x: -400, z: 175, scale: 2.4 },
+      // Swamp mudflat boulders
+      { x: 630, z: 630, scale: 2.6 },
+      { x: 680, z: 670, scale: 3.2 },
+      // Ancient Ruins megalith stones
+      { x: 705, z: -435, scale: 3.5 },
+      { x: 740, z: -465, scale: 4.0 },
+      // Volcanic Peak Basalt & Obsidian Boulders (+850m region)
+      { x: -70, z: -675, scale: 3.8 },
+      { x: -95, z: -705, scale: 4.2 },
+      { x: -60, z: -710, scale: 3.5 },
+      { x: -105, z: -665, scale: 4.5 },
     ];
 
     const boulderMat = new THREE.MeshStandardMaterial({
@@ -638,10 +784,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
       registerInteractable({
         id: `rock-${idx}`,
-        nameHu: idx > 6 ? 'Vulkanikus Bazalttömb' : 'Kovakő Ásványszikla',
+        nameHu: idx >= 9 ? 'Vulkanikus Bazalttömb (+850m)' : idx >= 7 ? 'Megalitikus Kőtömb' : 'Kovakő Ásványszikla',
         mesh: rockGroup,
         type: 'rock',
-        resourceLabel: 'Kovakő szilánk, Kőzet, Fémhulladék',
+        resourceLabel: idx >= 9 ? 'Obszidián, Kén kristály, Fém' : 'Kovakő szilánk, Kőzet, Fémhulladék',
         action: (hitPoint) => {
           sound.playMine();
           const p = hitPoint || rockGroup.position.clone().add(new THREE.Vector3(0, 1.2, 0));
@@ -651,7 +797,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           rockGroup.userData.shake = 0.25;
           callbacksRef.current.onUpdateInventory('flint_shard', 2);
 
-          const gotScrap = Math.random() < 0.35;
+          const gotScrap = Math.random() < 0.4;
           if (gotScrap) {
             callbacksRef.current.onUpdateInventory('scrap_metal', 1);
           }
@@ -670,14 +816,16 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // 10. CLICKABLE 3D JUNGLE HERB & VINE BUSHES
     const herbPositions = [
-      { x: 8, z: 72 },
-      { x: -8, z: 62 },
-      { x: 18, z: 52 },
-      { x: -18, z: 35 },
-      { x: 28, z: 25 },
-      { x: 38, z: 32 },
-      { x: 32, z: -15 },
-      { x: -5, z: 2 },
+      { x: 75, z: 1220 },
+      { x: 65, z: 1270 },
+      { x: 100, z: 1255 },
+      { x: -365, z: 150 },
+      { x: -395, z: 165 },
+      { x: -330, z: 180 },
+      { x: 645, z: 645 },
+      { x: 665, z: 630 },
+      { x: 710, z: -440 },
+      { x: 735, z: -455 },
     ];
 
     const herbLeafMat = new THREE.MeshStandardMaterial({ color: 0x1b5e20, roughness: 0.8 });
@@ -687,16 +835,16 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       const bushGroup = new THREE.Group();
       // Foliage clusters
       for (let i = 0; i < 4; i++) {
-        const leafBall = new THREE.Mesh(new THREE.SphereGeometry(0.55 + (i % 2) * 0.15, 6, 6), herbLeafMat);
+        const leafBall = new THREE.Mesh(new THREE.SphereGeometry(0.7 + (i % 2) * 0.2, 6, 6), herbLeafMat);
         const a = (i / 4) * Math.PI * 2;
-        leafBall.position.set(Math.cos(a) * 0.45, 0.45 + (i % 2) * 0.2, Math.sin(a) * 0.45);
+        leafBall.position.set(Math.cos(a) * 0.55, 0.55 + (i % 2) * 0.25, Math.sin(a) * 0.55);
         bushGroup.add(leafBall);
       }
       // Medicinal berries
       for (let b = 0; b < 6; b++) {
-        const berry = new THREE.Mesh(new THREE.SphereGeometry(0.12, 5, 5), berryMat);
+        const berry = new THREE.Mesh(new THREE.SphereGeometry(0.15, 5, 5), berryMat);
         const ba = (b / 6) * Math.PI * 2;
-        berry.position.set(Math.cos(ba) * 0.65, 0.6 + (b % 3) * 0.15, Math.sin(ba) * 0.65);
+        berry.position.set(Math.cos(ba) * 0.8, 0.7 + (b % 3) * 0.2, Math.sin(ba) * 0.8);
         bushGroup.add(berry);
       }
 
@@ -729,10 +877,11 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // 11. CLICKABLE 3D SUPPLY CRATES FROM SHIPWRECK
     const cratePositions = [
-      { x: 6, z: 82, rot: 0.2 },
-      { x: -16, z: 75, rot: -0.3 },
-      { x: -8, z: 18, rot: 0.5 },
-      { x: 28, z: 75, rot: 0.1 },
+      { x: 86, z: 1242, rot: 0.1 },
+      { x: 64, z: 1258, rot: -0.2 },
+      { x: 105, z: 1245, rot: 0.4 },
+      { x: -375, z: 155, rot: 0.5 },
+      { x: -390, z: 168, rot: -0.3 },
     ];
 
     const crateWoodMat = new THREE.MeshStandardMaterial({ color: 0x6d5236, roughness: 0.9 });
@@ -740,13 +889,13 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     cratePositions.forEach((p, idx) => {
       const crateGroup = new THREE.Group();
-      const box = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), crateWoodMat);
-      box.position.y = 0.45;
+      const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), crateWoodMat);
+      box.position.y = 0.6;
       crateGroup.add(box);
 
       // Iron strapping
-      const strap1 = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.12, 0.92), crateIronMat);
-      strap1.position.y = 0.45;
+      const strap1 = new THREE.Mesh(new THREE.BoxGeometry(1.22, 0.16, 1.22), crateIronMat);
+      strap1.position.y = 0.6;
       crateGroup.add(strap1);
 
       crateGroup.position.set(p.x, getGroundHeight(p.x, p.z), p.z);
@@ -789,15 +938,15 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // 12. Collectible Driftwood Logs on Beach
     const driftwoodMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.9 });
-    const logGeo = new THREE.CylinderGeometry(0.2, 0.22, 2.5, 6);
+    const logGeo = new THREE.CylinderGeometry(0.24, 0.28, 3.2, 6);
     logGeo.rotateZ(Math.PI / 2);
 
     [
-      { x: 12, z: 70 },
-      { x: 32, z: 80 },
-      { x: -10, z: 85 },
-      { x: 5, z: 92 },
-      { x: -22, z: 82 },
+      { x: 92, z: 1248 },
+      { x: 55, z: 1252 },
+      { x: 115, z: 1265 },
+      { x: 72, z: 1262 },
+      { x: 40, z: 1275 },
     ].forEach((pos, idx) => {
       const log = new THREE.Mesh(logGeo, driftwoodMat);
       log.position.set(pos.x, getGroundHeight(pos.x, pos.z) + 0.3, pos.z);
@@ -822,7 +971,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       });
     });
 
-    // 13. Companion (Maya Vance) 3D Avatar
+    // 13. Companion (Maya Vance) 3D Avatar (Coast Base: x: 70, z: 1240)
     const companionGroup = new THREE.Group();
     const compMat = new THREE.MeshStandardMaterial({ color: 0x00b4d8 });
     const compHeadMat = new THREE.MeshStandardMaterial({ color: 0xffd166 });
@@ -831,7 +980,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     const compHead = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 8), compHeadMat);
     compHead.position.y = 2.1;
     companionGroup.add(compBody, compHead);
-    companionGroup.position.set(16, getGroundHeight(16, 73), 73);
+    companionGroup.position.set(70, getGroundHeight(70, 1240), 1240);
     scene.add(companionGroup);
 
     registerInteractable({
@@ -1055,22 +1204,35 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     const cam = {
       yaw: 0, // radians around character
       pitch: 0.35, // elevation angle (~20 degrees downward perspective)
-      distance: 5.5, // distance to character
+      distance: 7.0, // distance to character
     };
 
-    // Player position and character orientation state
+    // Player position and character orientation state (Spawn at Coast Base: x: 80, z: 1255)
     const player = {
-      pos: new THREE.Vector3(15, getGroundHeight(15, 76) + 1.8, 76),
+      pos: new THREE.Vector3(80, getGroundHeight(80, 1255) + 1.8, 1255),
       velocity: new THREE.Vector3(),
-      charYaw: 0, // direction the survivor character model faces
+      charYaw: Math.PI, // Facing North towards the 850m volcanic peak
       isGrounded: true,
-      speed: 13,
+      speed: 16, // Balanced walking speed across 10 km2 terrain
     };
 
     resetCameraRef.current = () => {
       cam.yaw = player.charYaw + Math.PI;
       cam.pitch = 0.35;
-      cam.distance = 5.5;
+      cam.distance = 7.0;
+    };
+
+    // Instant Teleport / Waypoint Fast-Travel helper
+    teleportPlayerRef.current = (targetX: number, targetZ: number, zoneName?: string) => {
+      player.pos.x = targetX;
+      player.pos.z = targetZ;
+      const gh = getGroundHeight(targetX, targetZ);
+      player.pos.y = gh + 1.8;
+      player.velocity.set(0, 0, 0);
+      sound.playCraftSuccess();
+      if (zoneName) {
+        hudCallbacksRef.current.showGatherToast(`🚀 Teleportálva: ${zoneName} (${Math.round(gh)}m)`, '📍');
+      }
     };
 
     // 12. Input Listeners (Keyboard + Mouse + Touch)
@@ -1135,10 +1297,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       const { prop, point } = hit;
       const dist = player.pos.distanceTo(prop.mesh.position);
 
-      if (dist > 22.0) {
+      if (dist > 38.0) {
         sound.playDangerWarning();
         hudCallbacksRef.current.triggerFloatingNotice(
-          `${prop.nameHu} túl messze van (${Math.round(dist)}m)! Lépj közelebb (max 20m) a gyűjtéshez.`,
+          `${prop.nameHu} túl messze van (${Math.round(dist)}m)! Lépj közelebb (max 35m) a gyűjtéshez.`,
           'warn'
         );
         return true;
@@ -1206,7 +1368,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
               resourceLabel: hit.prop.resourceLabel,
               type: hit.prop.type,
               dist: Math.round(dist),
-              inRange: dist <= 22.0,
+              inRange: dist <= 38.0,
             });
           } else {
             container.style.cursor = 'default';
@@ -1320,6 +1482,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     // 13. Main 3D Animation Loop
     let lastTime = performance.now();
     let animId: number;
+    let lastGpsUpdateSlot = 0;
     const nearestPropRef: { current: InteractiveProp | null } = { current: null };
 
     const animate = (time: number) => {
@@ -1328,7 +1491,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       lastTime = time;
 
       // Animate water & campfire flicker
-      waterMat.opacity = 0.8 + Math.sin(time * 0.002) * 0.06;
+      waterMat.opacity = 0.82 + Math.sin(time * 0.002) * 0.05;
       firePointLight.intensity = 2.2 + Math.sin(time * 0.02) * 0.5 + Math.cos(time * 0.035) * 0.3;
 
       // Companion bob
@@ -1342,7 +1505,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       const moveVec = new THREE.Vector3();
       const vKeys = virtualKeysRef.current;
       const isSprinting = keys['ShiftLeft'] || keys['ShiftRight'] || vKeys.sprint;
-      const currentSpeed = isSprinting ? player.speed * 1.55 : player.speed;
+      const currentSpeed = isSprinting ? player.speed * 2.8 : player.speed;
 
       // Movement keys (WASD + Touch D-Pad)
       if (keys['KeyW'] || vKeys.forward) moveVec.z -= 1;
@@ -1364,10 +1527,10 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         cam.pitch = Math.max(-0.35, cam.pitch - 1.8 * dt);
       }
       if (vKeys.zoomIn || keys['NumpadAdd']) {
-        cam.distance = Math.max(2.5, cam.distance - 6.0 * dt);
+        cam.distance = Math.max(2.5, cam.distance - 8.0 * dt);
       }
       if (vKeys.zoomOut || keys['NumpadSubtract']) {
-        cam.distance = Math.min(15, cam.distance + 6.0 * dt);
+        cam.distance = Math.min(25, cam.distance + 8.0 * dt);
       }
 
       const isMoving = moveVec.lengthSq() > 0.001;
@@ -1393,13 +1556,13 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
       // Jump
       if ((keys['Space'] || vKeys.jump) && player.isGrounded) {
-        player.velocity.y = 8.5;
+        player.velocity.y = 12.0;
         player.isGrounded = false;
         sound.playClick();
       }
 
       // Gravity & Ground snap
-      player.velocity.y -= 22 * dt;
+      player.velocity.y -= 26 * dt;
       player.pos.y += player.velocity.y * dt;
 
       const gHeight = getGroundHeight(player.pos.x, player.pos.z) + 1.8;
@@ -1409,11 +1572,15 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         player.isGrounded = true;
       }
 
-      // Boundary: keep within island/reef perimeter
-      const pDist = Math.sqrt(player.pos.x * player.pos.x + player.pos.z * player.pos.z);
-      if (pDist > 140) {
-        player.pos.setLength(140);
+      // Boundary: keep within 10 km2 island & continental shelf perimeter (R ~ 2150m)
+      const pDist = Math.hypot(player.pos.x, player.pos.z);
+      if (pDist > 2150) {
+        player.pos.setLength(2150);
         sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice(
+          '⚠️ Elérted a nyílt óceán peremét (-30m mélység)! Erős áramlatok és cápák tartanak vissza.',
+          'warn'
+        );
       }
 
       // Update Survivor 3D Character Model (independent facing)
@@ -1495,22 +1662,35 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         }
       }
 
-      // Detect active zone by coordinates
-      if (player.pos.z < -30 && Math.abs(player.pos.x) < 55) {
-        setCurrentZoneName('Kihűlt Vulkán (Északi Magaslat)');
-      } else if (player.pos.x > 35 && player.pos.z < -20) {
-        setCurrentZoneName('Ősi Romok & Templom');
-      } else if (player.pos.x > 35 && player.pos.z > 30) {
-        setCurrentZoneName('Mocsárvidék & Iszapmező');
-      } else if (Math.abs(player.pos.z) < 35 && Math.abs(player.pos.x) < 45) {
-        setCurrentZoneName('Trópusi Esőerdő & Repülőgép Roncs');
+      // Real-time GPS and Altitude update (throttled to ~4 times/sec)
+      const pAlt = Math.round(player.pos.y - 1.8);
+      if (Math.floor(time / 250) !== lastGpsUpdateSlot) {
+        lastGpsUpdateSlot = Math.floor(time / 250);
+        setPlayerGps({
+          x: Math.round(player.pos.x),
+          z: Math.round(player.pos.z),
+          alt: pAlt,
+        });
+      }
+
+      // Detect active zone by 10 km2 coordinates and altitude
+      if (pDist > 1780) {
+        setCurrentZoneName(`Nyílt Óceán & Veszélyes Mélyvíz (${pAlt >= 0 ? `+${pAlt}m` : `${pAlt}m`})`);
+      } else if (Math.hypot(player.pos.x - (-80), player.pos.z - (-690)) < 750 || pAlt > 350) {
+        setCurrentZoneName(`Kihűlt Vulkán & Kaldera (+${pAlt}m • Max +850m)`);
+      } else if (Math.hypot(player.pos.x - 720, player.pos.z - (-450)) < 460 || (player.pos.x > 380 && player.pos.z < -100)) {
+        setCurrentZoneName(`Ősi Romok & Templomhegy (+${pAlt}m)`);
+      } else if (Math.hypot(player.pos.x - 650, player.pos.z - 650) < 520 || (player.pos.x > 280 && player.pos.z > 280)) {
+        setCurrentZoneName(`Mocsárvidék & Iszapmező (+${pAlt}m)`);
+      } else if (Math.hypot(player.pos.x - (-350), player.pos.z - 200) < 600 || (player.pos.z < 600 && player.pos.z > -250 && player.pos.x < 250)) {
+        setCurrentZoneName(`Trópusi Esőerdő & Roncs (+${pAlt}m)`);
       } else {
-        setCurrentZoneName('Partvidék & Sekély Vizek');
+        setCurrentZoneName(`Partvidék & Sekély Zátonyok (+${pAlt}m)`);
       }
 
       // Check proximity to interactables
       let closest: InteractiveProp | null = null;
-      let closestDist = 5.0;
+      let closestDist = 8.0;
       for (const item of interactables) {
         const d = player.pos.distanceTo(item.mesh.position);
         if (d < closestDist) {
@@ -1521,7 +1701,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
       // Proximity to Companion
       const distToComp = player.pos.distanceTo(companionGroup.position);
-      if (distToComp < 4.5) {
+      if (distToComp < 6.0) {
         setInteractionPrompt(`Beszélj Maya Vance-szel [🖐️ Gyűjtés / E]`);
         nearestPropRef.current = {
           id: 'companion',
@@ -1697,15 +1877,45 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
       {/* Top 3D Status Overlay */}
       <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none">
-        <div className="bg-slate-900/90 border border-emerald-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2 pointer-events-auto backdrop-blur shadow-lg">
-          <Compass className="w-4 h-4 text-emerald-400 animate-spin-slow" />
-          <span className="text-xs font-bold text-stone-100">{currentZoneName}</span>
-          <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60 hidden sm:inline">
-            3D WebGL
-          </span>
+        <div className="flex flex-col gap-1 pointer-events-auto">
+          <div className="bg-slate-900/90 border border-emerald-800/80 rounded-lg px-3 py-1.5 flex items-center gap-2 backdrop-blur shadow-lg">
+            <Compass className="w-4 h-4 text-emerald-400 animate-spin-slow shrink-0" />
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-stone-100">{currentZoneName}</span>
+                <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800/60 hidden sm:inline">
+                  10 km² Sziget
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] font-mono">
+                <span className="text-stone-300">GPS: X: <strong className="text-cyan-300">{playerGps.x}m</strong>, Z: <strong className="text-cyan-300">{playerGps.z}m</strong></span>
+                <span className="text-stone-600">•</span>
+                <span className={playerGps.alt >= 0 ? "text-emerald-300 font-bold" : "text-cyan-400 font-bold"}>
+                  Magasság: {playerGps.alt >= 0 ? `+${playerGps.alt}m` : `${playerGps.alt}m`} (Max: +850m)
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
+          {/* Waypoints Quick-Travel Dropdown Button */}
+          <button
+            onClick={() => {
+              sound.playClick();
+              setShowWaypointsMenu(!showWaypointsMenu);
+            }}
+            className={`p-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition shadow ${
+              showWaypointsMenu
+                ? 'bg-cyan-700 border-cyan-400 text-white ring-1 ring-cyan-400/50'
+                : 'bg-slate-900/90 hover:bg-slate-800 border-stone-700 text-stone-300'
+            }`}
+            title="Gyorsutazás / Teleportálási pontok (10 km² helyszínek)"
+          >
+            <Compass className="w-4 h-4 text-cyan-400" />
+            <span className="hidden sm:inline">Gyorsugrás</span>
+          </button>
+
           {/* Toggle Touch Controls button */}
           <button
             onClick={() => setShowTouchControls(!showTouchControls)}
@@ -1775,6 +1985,49 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Waypoints Quick-Travel Dropdown Menu */}
+      {showWaypointsMenu && (
+        <div className="absolute top-16 right-3 z-40 bg-slate-900/95 border border-cyan-500/80 rounded-xl p-3 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 max-w-xs w-full">
+          <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-stone-800">
+            <span className="text-xs font-bold text-cyan-200 flex items-center gap-1.5">
+              <Compass className="w-4 h-4 text-cyan-400" />
+              Gyorsugrás a 10 km² szigeten
+            </span>
+            <button
+              onClick={() => setShowWaypointsMenu(false)}
+              className="p-1 rounded hover:bg-stone-800 text-stone-400 hover:text-stone-200"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <p className="text-[10px] text-stone-400 mb-2 leading-relaxed">
+            Azonnali teleportálás a sziget 5 fő zónájába a hatalmas távolságok és magasságok gyors felfedezéséhez:
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {WAYPOINTS.map((wp) => (
+              <button
+                key={wp.id}
+                onClick={() => {
+                  teleportPlayerRef.current(wp.x, wp.z, wp.name);
+                  setShowWaypointsMenu(false);
+                }}
+                className="flex items-center justify-between p-2 rounded-lg bg-slate-800/80 hover:bg-cyan-900/50 border border-stone-700/80 hover:border-cyan-500 transition text-left group"
+              >
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-stone-200 group-hover:text-cyan-200">
+                    {wp.name}
+                  </span>
+                  <span className="text-[9px] text-stone-400">{wp.desc}</span>
+                </div>
+                <span className="text-[10px] font-mono font-bold text-emerald-400 bg-slate-950 px-1.5 py-0.5 rounded border border-emerald-900/60 shrink-0 ml-2">
+                  {wp.elev}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Hover Inspection Badge on 3D Objects */}
       {hoverInfo && (

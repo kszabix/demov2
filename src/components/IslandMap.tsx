@@ -52,7 +52,7 @@ export const IslandMap: React.FC<IslandMapProps> = ({
             <div className="flex items-center gap-2">
               <Compass className="w-5 h-5 text-emerald-400 animate-spin-slow" />
               <h2 className="text-lg font-bold tracking-wide text-stone-100 uppercase">
-                Sziget Topográfia &amp; Zónák (10–20 km²)
+                Sziget Topográfia &amp; Zónák (10 km² • Max +850m • Mélység -30m)
               </h2>
             </div>
             <span className="text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded">
@@ -61,15 +61,15 @@ export const IslandMap: React.FC<IslandMapProps> = ({
           </div>
 
           <p className="text-xs text-stone-400 mb-4">
-            Válassz ki egy zónát a felfedezéshez vagy az expedíció indításához. A mély vízben ragadozó cáparajok és erős áramlatok tartanak a sziget közelében.
+            A sziget teljes területe kb. 10 km², legmagasabb pontja az északi vulkán csúcsa (+850m), míg a part menti korallzátonyok után a tengerfenék -30 méter mélységig süllyed. Válassz zónát az átvonuláshoz!
           </p>
 
           {/* Interactive Topological Island Graphic SVG/Canvas styling */}
           <div className="relative aspect-[16/10] w-full rounded-lg overflow-hidden border border-emerald-900/40 bg-gradient-to-b from-slate-950 via-slate-900 to-sky-950 p-3 shadow-inner">
             {/* Deep ocean boundary & sharks indicator */}
             <div className="absolute inset-0 border-4 border-dashed border-cyan-800/30 rounded-lg pointer-events-none flex items-center justify-center">
-              <span className="text-[11px] font-mono text-cyan-600/60 uppercase tracking-widest bg-slate-950/80 px-3 py-1 rounded border border-cyan-900/40">
-                Nyílt Tengeri Áramlat &amp; Cápák Vonal (50-100m)
+              <span className="text-[11px] font-mono text-cyan-400 uppercase tracking-widest bg-slate-950/85 px-3 py-1 rounded border border-cyan-800/60 shadow">
+                Nyílt Óceán &amp; Ragadozó Cápák (Mélység: -30m • Távolság: &gt;1800m)
               </span>
             </div>
 
@@ -88,7 +88,7 @@ export const IslandMap: React.FC<IslandMapProps> = ({
             >
               <Mountain className="w-6 h-6 text-orange-400 mb-0.5" />
               <span className="text-xs font-bold text-orange-200">Kihűlt Vulkán</span>
-              <span className="text-[10px] text-orange-400/80">Magaslat &amp; Ércek (15%)</span>
+              <span className="text-[10px] text-orange-300 font-mono">Csúcs: +850m • Kaldera</span>
               {state.currentZone === 'volcano' && (
                 <span className="mt-1 flex items-center gap-1 text-[9px] bg-emerald-500 text-slate-950 font-bold px-1.5 py-0.5 rounded-full">
                   <MapPin className="w-2.5 h-2.5" /> Jelenlegi hely
@@ -110,7 +110,7 @@ export const IslandMap: React.FC<IslandMapProps> = ({
             >
               <Trees className="w-7 h-7 text-emerald-400 mb-0.5" />
               <span className="text-xs font-bold text-emerald-200">Trópusi Esőerdő</span>
-              <span className="text-[10px] text-emerald-400/80">Dzsungel, Patak &amp; Repülőgép (35%)</span>
+              <span className="text-[10px] text-emerald-300 font-mono">Folyóvölgy &amp; Repülőgép (+25m...+150m)</span>
               {state.currentZone === 'rainforest' && (
                 <span className="mt-1 flex items-center gap-1 text-[9px] bg-emerald-500 text-slate-950 font-bold px-1.5 py-0.5 rounded-full">
                   <MapPin className="w-2.5 h-2.5" /> Jelenlegi hely
@@ -132,7 +132,7 @@ export const IslandMap: React.FC<IslandMapProps> = ({
             >
               <Skull className="w-5 h-5 text-lime-400 mb-0.5" />
               <span className="text-xs font-bold text-lime-200">Mocsárvidék</span>
-              <span className="text-[10px] text-lime-400/80">Agyag &amp; Kinin orchidea (15%)</span>
+              <span className="text-[10px] text-lime-300 font-mono">Iszap &amp; Orchideák (+2m...+25m)</span>
               {state.currentZone === 'swamp' && (
                 <span className="mt-1 flex items-center gap-1 text-[9px] bg-emerald-500 text-slate-950 font-bold px-1.5 py-0.5 rounded-full">
                   <MapPin className="w-2.5 h-2.5" /> Jelenlegi hely
@@ -153,8 +153,8 @@ export const IslandMap: React.FC<IslandMapProps> = ({
               }`}
             >
               <Waves className="w-5 h-5 text-cyan-400 mb-0.5" />
-              <span className="text-xs font-bold text-cyan-200">Partvidék &amp; Roncsok</span>
-              <span className="text-[10px] text-cyan-400/80">Kezdőtábor &amp; Tutaj (20%)</span>
+              <span className="text-xs font-bold text-cyan-200">Partvidék &amp; Zátonyok</span>
+              <span className="text-[10px] text-cyan-300 font-mono">Bázis (0m...+15m • Mélység -30m)</span>
               {state.currentZone === 'coast' && (
                 <span className="mt-1 flex items-center gap-1 text-[9px] bg-emerald-500 text-slate-950 font-bold px-1.5 py-0.5 rounded-full">
                   <MapPin className="w-2.5 h-2.5" /> Jelenlegi hely
@@ -176,7 +176,7 @@ export const IslandMap: React.FC<IslandMapProps> = ({
             >
               <Sparkles className="w-4 h-4 text-amber-400 mb-0.5" />
               <span className="text-[11px] font-bold text-amber-200">Ősi Romok</span>
-              <span className="text-[9px] text-amber-400/80">Titánium &amp; Fejtörők (10%)</span>
+              <span className="text-[9px] text-amber-300 font-mono">Templomhegy (+160m...+340m)</span>
               {state.currentZone === 'ruins' && (
                 <span className="mt-0.5 flex items-center gap-0.5 text-[8px] bg-emerald-500 text-slate-950 font-bold px-1 py-0.2 rounded-full">
                   <MapPin className="w-2 h-2" /> Itt vagy
