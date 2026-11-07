@@ -15,6 +15,7 @@ import {
   evaluateOceanRaft,
   evaluateAirplane,
 } from './game/simulation';
+import { BuildingPiece, analyzeBuildingComfort } from './game/buildingSystem';
 import { ISLAND_ZONES, CraftingRecipe } from './game/recipes';
 import { HeaderHUD } from './components/HeaderHUD';
 import { IslandMap } from './components/IslandMap';
@@ -268,6 +269,25 @@ export default function App() {
           },
           ...prev.eventLogs,
         ],
+      };
+    });
+  };
+
+  const handleUpdateModularBase = (pieces: BuildingPiece[]) => {
+    setGameState((prev) => {
+      const updatedComfort = analyzeBuildingComfort(
+        pieces,
+        prev.ambientTemperature,
+        prev.weather,
+        prev.base.campfireLit
+      );
+      return {
+        ...prev,
+        modularBase: {
+          ...prev.modularBase,
+          pieces,
+          comfort: updatedComfort,
+        },
       };
     });
   };
@@ -823,6 +843,7 @@ export default function App() {
             onUpdateInventory={handleUpdateInventoryFrom3D}
             onLogEvent={handleLogEventFrom3D}
             onSwitchToTab={(tab) => setActiveTab(tab as any)}
+            onUpdateModularBase={handleUpdateModularBase}
           />
         )}
 
@@ -842,6 +863,8 @@ export default function App() {
             onTreatPlayer={handleTreatPlayer}
             onCollectRainWater={handleCollectRainWater}
             onTendFire={handleTendFire}
+            onUpdateModularBase={handleUpdateModularBase}
+            onSwitchTo3DBuildMode={() => setActiveTab('3d')}
           />
         )}
 
