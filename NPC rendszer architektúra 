@@ -1,0 +1,84 @@
+# AI NPC Rendszerarchitektúra és Működési Dokumentáció
+
+## 1. Koncepció és Filozófia
+A játék központi eleme egy rendkívül mélyen kidolgozott, fotórealisztikus, szuperintelligens AI NPC. A projekt nem egy klasszikus túlélőjáték, hanem egy kétoldalú **pszichológiai és etikai kísérlet**, amely az emberi kapcsolatokat, a kiszolgáltatottságot és a döntések súlyát vizsgálja egy lakatlan szigeti környezetben.
+
+* **Karazterszám:** Maximum 1–2 aktív NPC a világban.
+* **Autonómia:** Az NPC független akarattal, saját mentális állapottal és döntési mechanizmussal rendelkezik.
+* **Tüköreffektus:** A játékos tettei, szavai és hozzáállása (támogatás vs. toxicitás/erőszak) határozzák meg az NPC érzelmi átalakulását: a legközelebbi társtól a legsötétebb rémálomig.
+
+---
+
+## 2. Pszichológiai és Érzelmi Architektúra
+
+### A. Érzelmi és Relációs Mátrix (JSON Adatmodell)
+A szerveroldalon folyamatosan frissülő állapotgép, amely meghatározza az NPC viselkedését:
+* **Bizalom (Trust):** 0 – 100
+* **Félelem / Kiszolgáltatottság (Fear):** 0 – 100
+* **Neheztelés / Harag (Resentment):** 0 – 100
+* **Empátia-index (Perceived Empathy):** 0 – 100
+
+### B. Mentális Egészség (Sanity Fázisok)
+Az NPC a játékossal megegyező mentális mutatókkal rendelkezik. Állapotai:
+1. **Stressz & Szorongás:** Megerősítést vár, fél a sötéttől és az elhagyatottságtól.
+2. **Paranoia & Düh:** Ha bántják vagy elnyomják, védekező lázadásba kezd (csapdák, szabotázs, elrejtett fegyverek).
+3. **Depresszió & Apátia:** Trauma vagy elhanyagolás hatására megtagadja a munkát és az ételt.
+4. **Pszichózis:** Teljes összeomlás, kiszámíthatatlan akciók és hallucinációk.
+
+---
+
+## 3. Dinamikus Autonómia és Fejlődési Rendszer
+
+### A. Önálló Képességfejlődés (No Respec / No Edit)
+* **AI Vezérelt Pontosztás:** Az NPC saját maga határozza meg a szintlépésekor megszerzett képességeit (Skill Tree) az átélt tapasztalatai és félelmei alapján.
+* **Játékosi Beavatkozás Tiltása:** A játékos **nem módosíthatja** és nem befolyásolhatja közvetlenül az NPC tulajdonságait.
+* **Véglegesség:** A kiválasztott képességek örökre megmaradnak.
+* **Szervi visszacsatolás:** Nincs látható UI karakterlap; a játékos az NPC viselkedéséből és párbeszédeiből tapasztalja meg a fejlődést (pl. magabiztosabb menedéképítés, gyógynövény-ismeret).
+
+### B. Kettős Cselekvési Modell
+* **Passzív / Rutin Cselekvések:** Hagyományos játékmotor AI (Behavior Tree / Utility AI) mozgatja a karakterszükségleteket (alvás, sétálás, munka), 0 Ft API költséggel.
+* **Környezeti Szabotázs & Védekezés (Function Calling):** Reális eszközöket használ a játékos ellen, ha haragszik rá (pl. gyufa/víztisztító elcsenése éjszaka, szándékosan felhalmozott vadcsalik a tábor körül, ciklon előtti kötélelvágás).
+
+---
+
+## 4. Kommunikáció és Vizuális Megjelenítés (UE5)
+
+### A. Kétoldalú Szabad Párbeszéd
+* **Bevitel:** Szabad szöveges gépelés (Free-Text Input) a játékos részéről. Nincsenek kötött opciók.
+* **Kétoldalú Hang (TTS):** Mindkét karakter hangosan megszólal (Text-to-Speech motor segítségével). A játékos felolvasott mondatát az NPC valós időben értelmezi és válaszol rá.
+
+### B. Fotórealizmus és Mimika
+* **MetaHuman & Mesh to MetaHuman:** Anatómiailag hajszálpontos arc- és csontváz-rigging.
+* **130+ ARKit Blendshape:** Az érzelmi állapot dinamikusan vezérli az arcizmokat (remegő szájszél, összehúzott szemöldök, kerülő tekintet).
+* **NVIDIA Audio2Face / MetaHuman Animator:** Valós idejű, hajszálpontos ajakszinkron a TTS hangokhoz.
+* **Full Body IK (FBIK):** Dinamikus testbeszéd (paranoiás hátrálás, tőrhöz nyúlás, nyitott gesztusok).
+
+### C. Grafikai Skálázhatóság (Low Preset Optimization)
+* **Prioritás:** Low grafikai beállításoknál a környezeti elemek (fák, fű, Lumen) kikapcsolásra vagy csökkentésre kerülnek.
+* **Karakter-LOD Védelme:** A karakterek modelljei és arcizmai Low grafikai szinten is megőrzik a magas részletességet (LOD0–LOD1) és a magas felbontású Normal Map-eket.
+
+---
+
+## 5. Permadeath és Adatkezelés
+
+### A. Végleges Halál és Törlés
+* **Nincs Újraéledés és Visszatöltés:** Ha az NPC meghal, az állapota és előzményei felülíródnak és **véglegesen törlődnek** a szerverről/API memóriából.
+* **Szerveroldali Hash Védelem:** A mentési fájlok manipulálása ellen titkosított védelmi háló működik.
+
+### B. A "Kísértő Magány" és az Új NPC
+* **Partra Vetődő Új NPC:** Pár nap kietlen magány után a hullámok egy új jövevényt sodorhatnak a partra.
+* **Tiszta Lap vs. Játékosi Bűntudat:** Az új NPC nem tud a múlttról, de a játékos viselkedését átformálja a korábbi tragédia emléke.
+
+---
+
+## 6. A 3 Pszichológiai Végjáték (Outro Animációk)
+
+1. **A Család (Szimbiózis / Megváltás):**
+   * *Kritérium:* Kölcsönös empátia, jó mentális állapot.
+   * *Jelenet:* Békés kisvárosi ház évekkel később, a játékos és az NPC boldog családiként élnek együtt.
+2. **A Második Esély (Keserédes / A Megváltozott Játékos):**
+   * *Kritérium:* Az 1. NPC meghalt, de a játékos tanulva a hibáiból a 2. NPC-vel sikeresen megmenekült.
+   * *Jelenet:* Kisvárosi családi ház a 2. NPC-vel, de a háttérben/ablaküvegben némán megjelenik az elhunyt 1. NPC szelleme/sziluettje.
+3. **Az Intézmény (Tragikus / Pszichózis):**
+   * *Kritérium:* A játékos egyedül végez, elpusztítva vagy elüldözve a társait.
+   * *Jelenet:* Szürke, steril pszichiátriai intézmény zárt osztálya. A játékos magába roskadva ül, miközben a homályos sarokban az elhunyt NPC-k árnyai nézik őt.
