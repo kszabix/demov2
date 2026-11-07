@@ -96,3 +96,16 @@ test('Catastrophe cycle resets vehicle, injures player, but preserves base and i
   assert.ok(crashedState.player.injuries.bleeding, 'Player gains bleeding injury from wreck');
   assert.ok(crashedState.companion.relationshipPoints < state.companion.relationshipPoints, 'Companion trust drops');
 });
+
+test('Maya Vance companion is a 21-year-old sole survivor with sweepstakes, car and nature backstory', () => {
+  const state = createInitialState();
+  const comp = state.companion;
+  assert.equal(comp.name, 'Maya Vance');
+  assert.equal(comp.backstory.age, 21);
+  assert.ok(comp.backstory.sweepstakesStoryHu.includes('Pacific Siren') || comp.backstory.sweepstakesStoryHu.includes('kvízjáték'));
+  assert.ok(comp.backstory.carStoryHu.includes('1989') || comp.backstory.carStoryHu.includes('Rozsdás Villám'));
+  assert.ok(comp.backstory.fantasyLoreHu.includes('Végzet Hegyének') || comp.backstory.fantasyLoreHu.includes('Gyűrűk Ura'));
+  assert.equal(comp.backstory.relics.length, 4);
+  assert.ok(comp.backstory.languages.length >= 2);
+  assert.ok(comp.backstory.personalityTraitsHu.length >= 4);
+});

@@ -3,6 +3,14 @@
  * Pure logic and state transitions decoupled from UI for testability and stability.
  */
 
+import {
+  BuildingPiece,
+  BuildingTier,
+  BuildingComfortInfo,
+  createStarterModularBase,
+  analyzeBuildingComfort,
+} from './buildingSystem';
+
 export type ZoneId = 'coast' | 'rainforest' | 'swamp' | 'volcano' | 'ruins';
 
 export type WeatherType = 'clear' | 'heatwave' | 'rain' | 'storm';
@@ -37,6 +45,27 @@ export type CompanionTask =
   | 'scouting'
   | 'working_vehicle';
 
+export interface CompanionPersonalRelic {
+  id: string;
+  nameHu: string;
+  icon: string;
+  descHu: string;
+}
+
+export interface CompanionBackstory {
+  age: number; // 21 éves fiatal lány
+  backgroundSummaryHu: string;
+  sweepstakesStoryHu: string;
+  dreamHu: string;
+  carStoryHu: string;
+  natureLoreHu: string;
+  fantasyLoreHu: string;
+  languages: string[];
+  personalityTraitsHu: string[];
+  favoriteQuotesHu: string[];
+  relics: CompanionPersonalRelic[];
+}
+
 export interface CompanionState {
   id: string;
   name: string;
@@ -63,6 +92,7 @@ export interface CompanionState {
     isDehydrated: boolean;
   };
   memories: string[];
+  backstory: CompanionBackstory;
 }
 
 export interface InventoryItem {
@@ -128,6 +158,11 @@ export interface GameState {
   companion: CompanionState;
   inventory: Record<string, number>;
   base: BaseBuildingState;
+  modularBase: {
+    pieces: BuildingPiece[];
+    activeTier: BuildingTier;
+    comfort: BuildingComfortInfo;
+  };
   oceanRaft: OceanRaftProgress;
   airplane: AirplaneProgress;
   ruins: RuinsPuzzles;
@@ -182,7 +217,7 @@ export function createInitialState(): GameState {
       id: 'maya-1',
       name: 'Maya Vance',
       gender: 'female',
-      role: 'Tengerbiológus és navigátor (Hajótörött társ)',
+      role: '21 éves túlélőtárs (Túrázó, leleményes felfedező)',
       isAlive: true,
       health: 90,
       hunger: 70,
@@ -208,9 +243,60 @@ export function createInitialState(): GameState {
         isDehydrated: false,
       },
       memories: [
-        'A luxus óceánjáró felborult a sziklás zátonyoknál. Együtt sodródtunk a homokos partra.',
-        'Még bizonytalan vagyok, vajon képesek leszünk-e megosztani a szűkös készleteket és kijutni innen.',
+        'A Pacific Siren luxushajó felborult a zátonyoknál. Több száz utas közül egyedül mi ketten éltük túl és értünk partra elevenen.',
+        'Még bizonytalan vagyok, vajon képesek leszünk-e megosztani a szűkös készleteket és kijutni innen, de az élni akarásom határtalan!',
       ],
+      backstory: {
+        age: 21,
+        backgroundSummaryHu: '21 éves, vidám, talpraesett és sportos fiatal lány. Imádja a természetet, a kihívásokat, és egy nyereményjátéknak köszönhetően jutott el a luxushajóra, amely élete nagy világkörüli álmát váltotta volna valóra. Most a túlélésért küzd a játékossal – kettesben a világ végén.',
+        sweepstakesStoryHu: 'Egy országos rádiós kvízjátékon nyert egy all-inclusive páros jegyet a Pacific Siren óceánjáró luxusútjára. Nem akarta elhinni a szerencséjét: diákként sosem lett volna pénze egy ilyen útra. Bár a hajó odaveszett, ő a szerencséjét abban látja, hogy életben maradt!',
+        dreamHu: 'Világot látni, bejárni a legvadabb hegyeket és trópusi ösvényeket, megtanulni idegen nyelveket és egyszer egy saját hegyi túramenedéket nyitni.',
+        carStoryHu: 'Otthon a szeme fénye egy kopott, 1989-es kis ferdehátú veterán ("Rozsdás Villám"). Bár állandóan leállt és forrt a hűtővize, ez a kocsi tanította meg a makacs önállóságra: egy laposfogóval, dróttal és szigszalaggal képes bármit megjavítani az út szélén. Ezt a makacs barkácstudást hozta magával a szigetre is!',
+        natureLoreHu: 'Kamaszkora óta megszállottan nézi David Attenborough és a túlélőexpedíciók dokumentumfilmjeit. Fejből felismeri a rostos kéregfajtákat a tűzgyújtáshoz, a vad gyümölcsöket és a tiszta forrásvizet.',
+        fantasyLoreHu: 'Óriási fantasy és kalandfilm-rajongó (a Gyűrűk Ura a mindene). A sziget 850 méteres vulkánját már az első napon "Végzet Hegyének" keresztelte el. Még a legsötétebb pillanatokban is egy-egy találó poénnal vagy filmes idézettel hozza vissza a reményt.',
+        languages: ['Magyar (anyanyelv)', 'Angol (folyékony)', 'Spanyol (társalgási)'],
+        personalityTraitsHu: [
+          'Túlnyomóan vidám és optimista',
+          'Folyamatos tenni akarás, képtelen tétlenkedni',
+          'Önálló és okos bajtárs',
+          'Feltalálja magát szorult helyzetekben',
+          'Szeret viccelődni és ugratni',
+          'Sportos, kitartó túrázó',
+        ],
+        favoriteQuotesHu: [
+          'Egy dolog nem sétál be csak úgy a vulkáni kalderába!',
+          'Legalább a tengerre néző kilátásért és a naplementéért nem kell külön számlát fizetni!',
+          'Ha a Rozsdás Villámot be tudtam röffenteni egy hajtűvel, ezt a tutajkormányt is összedrótozzuk!',
+          'Attenborough biztos azt mondaná: "Íme a két túlélő, amint épp az utolsó kókuszdiójukon tanakodnak."',
+          'A világ túl szép és nagy ahhoz, hogy feladjuk!',
+        ],
+        relics: [
+          {
+            id: 'sweepstakes_ticket',
+            nameHu: 'Aranyfedélzet Sorsjegy',
+            icon: '🎫',
+            descHu: 'Az elázott nyertes kupon a tárcájában. Emlékezteti arra, hogy a sors a legváratlanabb kalandokat dobja elénk.',
+          },
+          {
+            id: 'vintage_car_key',
+            nameHu: 'A 89-es Kisautó Kulcsa',
+            icon: '🔑',
+            descHu: 'Kopott slusszkulcs egy kis plüss lajhárral. Maya szerencsetalizmánja: a kitartás és az önállóság jelképe.',
+          },
+          {
+            id: 'hiking_compass',
+            nameHu: 'Réz Túrairánytű',
+            icon: '🧭',
+            descHu: 'A hegyi túráiról megőrzött mechanikus réz iránytű. A nyakában viseli egy ejtőernyőzsinóron.',
+          },
+          {
+            id: 'fantasy_paperback',
+            nameHu: 'Ázott Fantasy Zsebkönyv',
+            icon: '📖',
+            descHu: 'Gyűrött, félig megszáradt regény lapjai. Esténként a tűz mellett olvas belőle fel részleteket.',
+          },
+        ],
+      },
     },
     inventory: { ...INITIAL_INVENTORY },
     base: {
@@ -226,6 +312,11 @@ export function createInitialState(): GameState {
       dryingRackBuilt: true,
       fuelDistilleryBuilt: false,
       storageCapacity: 50,
+    },
+    modularBase: {
+      pieces: createStarterModularBase(),
+      activeTier: 'wood',
+      comfort: analyzeBuildingComfort(createStarterModularBase(), 28, 'clear', true),
     },
     oceanRaft: {
       phase1Hull: 25,
@@ -341,22 +432,59 @@ export function tickSimulation(state: GameState, minutesPassed: number): GameSta
     next.base.rainCollectorLevel = Math.min(100, next.base.rainCollectorLevel + Math.round(hoursPassed * 25));
   }
 
+  // Update modular base comfort (Section 6 of GDD)
+  if (next.modularBase) {
+    next.modularBase.comfort = analyzeBuildingComfort(
+      next.modularBase.pieces,
+      next.ambientTemperature,
+      next.weather,
+      next.base.campfireLit
+    );
+
+    // Tropical Hurricane / Storm mechanic (GDD Section 6):
+    // Uninsulated thatch elements can take damage in violent storms; wood & stone resist completely
+    if (next.weather === 'storm' && Math.random() < 0.2 * hoursPassed) {
+      const vulnerablePieces = next.modularBase.pieces.filter(
+        (p) => p.tier === 'thatch' && !p.insulated
+      );
+      if (vulnerablePieces.length > 0) {
+        const victim = vulnerablePieces[Math.floor(Math.random() * vulnerablePieces.length)];
+        victim.hp = Math.max(0, victim.hp - 35);
+        if (victim.hp === 0) {
+          next.modularBase.pieces = next.modularBase.pieces.filter((p) => p.id !== victim.id);
+          next.eventLogs.unshift({
+            id: `ev-storm-thatch-${Date.now()}`,
+            day: next.day,
+            time: `${Math.floor(next.timeOfDayHours).toString().padStart(2, '0')}:00`,
+            text: `A tropical hurricane damaged an uninsulated thatch ${victim.type}. Insulate with clay or upgrade to wood!`,
+            textHu: `A trópusi monszun vihar megrongált egy szigeteletlen szalma elemet (${victim.type}). Szigeteld agyaggal vagy fejleszd fára!`,
+            type: 'danger',
+          });
+        }
+      }
+    }
+  }
+
   // Player physiological tick
+  const isSheltered = next.currentZone === 'coast' && (next.modularBase?.comfort?.isEnclosed ?? false);
+  const effectiveTemp = isSheltered ? next.modularBase.comfort.indoorTemperature : next.ambientTemperature;
+
   const hungerLoss = (hoursPassed * 3.5);
-  const thirstLoss = (hoursPassed * (next.weather === 'heatwave' ? 7.0 : 4.5));
+  // Heatwave thirst loss is mitigated by an insulated, cooled shelter (24-26°C interior)
+  const thirstLoss = hoursPassed * (next.weather === 'heatwave' ? (isSheltered ? 4.5 : 7.0) : 4.5);
   
   next.player.hunger = Math.max(0, Math.round(next.player.hunger - hungerLoss));
   next.player.thirst = Math.max(0, Math.round(next.player.thirst - thirstLoss));
 
-  // Temperature regulation
-  if (next.ambientTemperature > 36 && !next.base.campfireLit) {
+  // Temperature regulation: enclosed base protects player from extreme weather
+  if (effectiveTemp > 36 && !next.base.campfireLit) {
     next.player.bodyTemp = Math.min(41.0, +(next.player.bodyTemp + 0.1 * hoursPassed).toFixed(1));
-  } else if (next.ambientTemperature < 18 && !next.base.campfireLit && isNight) {
+  } else if (effectiveTemp < 18 && !next.base.campfireLit && isNight) {
     next.player.bodyTemp = Math.max(34.0, +(next.player.bodyTemp - 0.15 * hoursPassed).toFixed(1));
   } else {
-    // Normalizing towards 36.8
-    if (next.player.bodyTemp > 36.8) next.player.bodyTemp = +(next.player.bodyTemp - 0.1 * hoursPassed).toFixed(1);
-    if (next.player.bodyTemp < 36.8) next.player.bodyTemp = +(next.player.bodyTemp + 0.1 * hoursPassed).toFixed(1);
+    // Normalizing towards healthy 36.8°C
+    if (next.player.bodyTemp > 36.8) next.player.bodyTemp = +(next.player.bodyTemp - 0.15 * hoursPassed).toFixed(1);
+    if (next.player.bodyTemp < 36.8) next.player.bodyTemp = +(next.player.bodyTemp + 0.15 * hoursPassed).toFixed(1);
   }
 
   // Health damage if starving, dehydrated, severe injuries or temp extreme

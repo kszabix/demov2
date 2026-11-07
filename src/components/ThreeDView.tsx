@@ -42,18 +42,44 @@ import {
   Palette,
   Layers,
   Loader2,
+  Hammer,
+  Home,
+  Grid,
+  DoorOpen,
+  DoorClosed,
+  Paintbrush,
+  Plus,
 } from 'lucide-react';
 import {
   saveCustomModel,
   getSavedCustomModel,
   clearSavedCustomModel,
 } from '../utils/avatarStorage';
+import {
+  BuildingPiece,
+  BuildingPieceType,
+  BuildingTier,
+  PIECE_BLUEPRINTS,
+  TIER_CONFIG,
+  INSULATION_COSTS,
+  canAffordPiece,
+  deductPieceCost,
+  getDemolishRefund,
+  calculateStructuralIntegrity,
+  analyzeBuildingComfort,
+} from '../game/buildingSystem';
+import {
+  BASE_ORIGIN,
+  createPiece3DGroup,
+  createGhostPreviewGroup,
+} from './modularBuilding3D';
 
 interface ThreeDViewProps {
   gameState: GameState;
   onUpdateInventory: (itemId: string, amount: number) => void;
   onLogEvent: (textHu: string) => void;
   onSwitchToTab: (tab: 'map' | 'base' | 'companion' | 'escape' | 'ruins' | 'studio') => void;
+  onUpdateModularBase?: (updatedPieces: BuildingPiece[]) => void;
 }
 
 export interface InteractiveProp {
@@ -85,6 +111,7 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   onUpdateInventory,
   onLogEvent,
   onSwitchToTab,
+  onUpdateModularBase,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -95,6 +122,71 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
   const [playerGps, setPlayerGps] = useState<{ x: number; z: number; alt: number }>({ x: 80, z: 1255, alt: 4 });
   const [showWaypointsMenu, setShowWaypointsMenu] = useState<boolean>(false);
   
+  // 3D Modular Base Building Mode State (GDD: Trópusi Sziget Építési Rendszer)
+  const [buildModeActive, setBuildModeActive] = useState<boolean>(false);
+  const [buildTier, setBuildTier] = useState<BuildingTier>('wood');
+  const [buildPieceType, setBuildPieceType] = useState<BuildingPieceType>('foundation');
+  const [buildRotation, setBuildRotation] = useState<number>(0);
+  const [buildElevation, setBuildElevation] = useState<number>(0);
+  const [buildSubMode, setBuildSubMode] = useState<'build' | 'demolish' | 'insulate'>('build');
+  const [snapStatus, setSnapStatus] = useState<{
+    x: number;
+    z: number;
+    elevation: number;
+    si: number;
+    isValid: boolean;
+    canAfford: boolean;
+  }>({
+    x: 0,
+    z: 0,
+    elevation: 0,
+    si: 100,
+    isValid: true,
+    canAfford: true,
+  });
+
+  const buildModeRef = useRef({
+    active: false,
+    tier: 'wood' as BuildingTier,
+    pieceType: 'foundation' as BuildingPieceType,
+    rotation: 0,
+    elevation: 0,
+    subMode: 'build' as 'build' | 'demolish' | 'insulate',
+  });
+
+  const snapStatusRef = useRef({
+    x: 0,
+    z: 0,
+    elevation: 0,
+    si: 100,
+    isValid: true,
+    canAfford: true,
+  });
+
+  useEffect(() => {
+    buildModeRef.current = {
+      active: buildModeActive,
+      tier: buildTier,
+      pieceType: buildPieceType,
+      rotation: buildRotation,
+      elevation: buildElevation,
+      subMode: buildSubMode,
+    };
+  }, [buildModeActive, buildTier, buildPieceType, buildRotation, buildElevation, buildSubMode]);
+
+  const currentPiecesRef = useRef<BuildingPiece[]>(gameState.modularBase?.pieces || []);
+  useEffect(() => {
+    currentPiecesRef.current = gameState.modularBase?.pieces || [];
+    modularBaseControllerRef.current?.rebuild(gameState.modularBase?.pieces || []);
+  }, [gameState.modularBase?.pieces]);
+
+  const modularBaseControllerRef = useRef<{
+    rebuild: (pieces: BuildingPiece[]) => void;
+    placePiece: () => void;
+    demolishPiece: (id: string) => void;
+    insulatePiece: (id: string) => void;
+  } | null>(null);
+
   // Interactive 3D object clicking state
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [gatheringToasts, setGatheringToasts] = useState<GatheringToast[]>([]);
@@ -192,12 +284,14 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     onUpdateInventory,
     onLogEvent,
     onSwitchToTab,
+    onUpdateModularBase,
     gameState,
   });
   callbacksRef.current = {
     onUpdateInventory,
     onLogEvent,
     onSwitchToTab,
+    onUpdateModularBase,
     gameState,
   };
 
@@ -396,33 +490,6 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     const interactables: InteractiveProp[] = [];
 
-    // 5. Stilt Base Shelter & Campfire (Coast: x: 18, z: 75)
-    const baseGroup = new THREE.Group();
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e4a28, roughness: 0.9 });
-    const thatchMat = new THREE.MeshStandardMaterial({ color: 0x99793d, roughness: 0.95 });
-
-    const platform = new THREE.Mesh(new THREE.BoxGeometry(7, 0.4, 7), woodMat);
-    platform.position.y = 2.2;
-    baseGroup.add(platform);
-
-    // 4 Stilt Legs
-    [-3, 3].forEach((sx) => {
-      [-3, 3].forEach((sz) => {
-        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.2, 4.5, 6), woodMat);
-        leg.position.set(sx, 0, sz);
-        baseGroup.add(leg);
-      });
-    });
-
-    // Thatch roof
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(5.2, 2.5, 4), thatchMat);
-    roof.position.y = 4.8;
-    roof.rotateY(Math.PI / 4);
-    baseGroup.add(roof);
-
-    baseGroup.position.set(80, getGroundHeight(80, 1250), 1250);
-    scene.add(baseGroup);
-
     const registerInteractable = (prop: InteractiveProp) => {
       interactables.push(prop);
       prop.mesh.userData.prop = prop;
@@ -431,14 +498,195 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       });
     };
 
+    // 5. Modular Grid Base System (GDD: Trópusi Sziget Építési Rendszer 2x2m Grid)
+    const modularBaseGroup = new THREE.Group();
+    scene.add(modularBaseGroup);
+
+    const baseOriginGroundY = getGroundHeight(BASE_ORIGIN.x, BASE_ORIGIN.z);
+
+    // 2x2m Modular Grid Alignment Helper
+    const buildGridHelper = new THREE.GridHelper(32, 16, 0x10b981, 0x059669);
+    buildGridHelper.position.set(BASE_ORIGIN.x, baseOriginGroundY + 0.05, BASE_ORIGIN.z);
+    buildGridHelper.visible = false;
+    scene.add(buildGridHelper);
+
+    // Dynamic Hologram Ghost Preview Container
+    let ghostGroup: THREE.Group | null = null;
+
+    // Procedural Rebuilder for all modular pieces in 3D
+    const rebuildModularBase = (pieces: BuildingPiece[]) => {
+      while (modularBaseGroup.children.length > 0) {
+        const obj = modularBaseGroup.children[0];
+        modularBaseGroup.remove(obj);
+      }
+
+      for (const piece of pieces) {
+        const pieceGroup = createPiece3DGroup(piece, baseOriginGroundY);
+        pieceGroup.userData = { isModularPiece: true, pieceId: piece.id, piece };
+        pieceGroup.traverse((child) => {
+          child.userData = { isModularPiece: true, pieceId: piece.id, piece };
+        });
+        modularBaseGroup.add(pieceGroup);
+      }
+    };
+
+    // Initial build from game state
+    rebuildModularBase(currentPiecesRef.current);
+
+    // Modular Building Workbench / Base Planner Hub (Coast: x: 83.2, z: 1250)
+    const workbenchGroup = new THREE.Group();
+    const woodMat = new THREE.MeshStandardMaterial({ color: 0x5c4033, roughness: 0.85 });
+    const benchTop = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.22, 0.9), woodMat);
+    benchTop.position.y = 0.9;
+    workbenchGroup.add(benchTop);
+    [-0.65, 0.65].forEach((bx) => {
+      [-0.32, 0.32].forEach((bz) => {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.9, 6), woodMat);
+        leg.position.set(bx, 0.45, bz);
+        workbenchGroup.add(leg);
+      });
+    });
+    // Blueprint paper & craft tools on the bench
+    const blueprintPaper = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.6, 0.4),
+      new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.4 })
+    );
+    blueprintPaper.rotateX(-Math.PI / 2);
+    blueprintPaper.position.set(-0.25, 1.02, 0);
+    workbenchGroup.add(blueprintPaper);
+    const hammerProp = new THREE.Mesh(
+      new THREE.BoxGeometry(0.12, 0.1, 0.32),
+      new THREE.MeshStandardMaterial({ color: 0x78716c, metalness: 0.8, roughness: 0.3 })
+    );
+    hammerProp.position.set(0.35, 1.06, 0.1);
+    workbenchGroup.add(hammerProp);
+
+    workbenchGroup.position.set(BASE_ORIGIN.x + 3.2, baseOriginGroundY, BASE_ORIGIN.z);
+    scene.add(workbenchGroup);
+
     registerInteractable({
       id: 'shelter',
-      nameHu: 'Cölöpös Bázis Menedék',
-      mesh: baseGroup,
+      nameHu: 'Bázis Túlélő Műhely & Tervező',
+      mesh: workbenchGroup,
       type: 'shelter',
-      resourceLabel: 'Műhely & Készítés',
+      resourceLabel: 'Építés, Klíma & Tervezés',
       action: () => callbacksRef.current.onSwitchToTab('base'),
     });
+
+    // Building Actions Handlers
+    const handlePlaceCurrentPiece = () => {
+      const { pieceType, tier, rotation, elevation } = buildModeRef.current;
+      const { x, z, isValid, canAfford } = snapStatusRef.current;
+
+      if (!isValid) {
+        sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice('Ide nem építhetsz: nincs megfelelő szerkezeti támaszték (0% SI)!', 'warn');
+        return;
+      }
+      if (!canAfford) {
+        sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice('Nincs elég nyersanyag a hátizsákban az elem felépítéséhez!', 'warn');
+        return;
+      }
+
+      // Deduct required resources
+      const costs = PIECE_BLUEPRINTS[pieceType].cost[tier];
+      Object.entries(costs).forEach(([itemId, qty]) => {
+        callbacksRef.current.onUpdateInventory(itemId, -qty);
+      });
+
+      const bp = PIECE_BLUEPRINTS[pieceType];
+      const maxHp = bp.maxHp[tier];
+
+      const newPiece: BuildingPiece = {
+        id: `piece-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        type: pieceType,
+        tier,
+        gridX: x,
+        gridZ: z,
+        elevation,
+        rotation,
+        hp: maxHp,
+        maxHp,
+        si: 100,
+        isOpen: false,
+        insulated: false,
+      };
+
+      const updatedRaw = [...currentPiecesRef.current, newPiece];
+      const { updatedPieces, collapsedPieceIds } = calculateStructuralIntegrity(updatedRaw);
+      currentPiecesRef.current = updatedPieces;
+      rebuildModularBase(updatedPieces);
+
+      if (callbacksRef.current.onUpdateModularBase) {
+        callbacksRef.current.onUpdateModularBase(updatedPieces);
+      }
+
+      sound.playMine();
+      hudCallbacksRef.current.showGatherToast(`🔨 ${bp.nameHu} (${TIER_CONFIG[tier].nameHu}) sikeresen elhelyezve!`, '✨');
+
+      if (collapsedPieceIds.length > 0) {
+        sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice(`⚠️ Statikai összeomlás: ${collapsedPieceIds.length} elem leomlott!`, 'warn');
+      }
+    };
+
+    const handleDemolishPiece = (id: string) => {
+      const target = currentPiecesRef.current.find((p) => p.id === id);
+      if (!target) return;
+      const refund = getDemolishRefund(target.type, target.tier);
+      Object.entries(refund).forEach(([item, amount]) => {
+        callbacksRef.current.onUpdateInventory(item, amount);
+      });
+      const remaining = currentPiecesRef.current.filter((p) => p.id !== id);
+      const { updatedPieces, collapsedPieceIds } = calculateStructuralIntegrity(remaining);
+      currentPiecesRef.current = updatedPieces;
+      rebuildModularBase(updatedPieces);
+      if (callbacksRef.current.onUpdateModularBase) {
+        callbacksRef.current.onUpdateModularBase(updatedPieces);
+      }
+      sound.playChop();
+      hudCallbacksRef.current.showGatherToast(`💥 ${PIECE_BLUEPRINTS[target.type].nameHu} lebontva! (50% visszatérítve)`, '♻️');
+      if (collapsedPieceIds.length > 0) {
+        sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice(`⚠️ Láncreakciós összeomlás: ${collapsedPieceIds.length} elem elvesztette a tartását!`, 'warn');
+      }
+    };
+
+    const handleInsulatePiece = (id: string) => {
+      const target = currentPiecesRef.current.find((p) => p.id === id);
+      if (!target) return;
+      if (target.insulated) {
+        hudCallbacksRef.current.triggerFloatingNotice('Ez az elem már agyagréteggel szigetelt!', 'info');
+        return;
+      }
+      const inv = callbacksRef.current.gameState.inventory;
+      const tierCosts = INSULATION_COSTS[target.tier];
+      const canAfford = Object.entries(tierCosts).every(([k, v]) => (inv[k] || 0) >= v);
+      if (!canAfford) {
+        sound.playDangerWarning();
+        hudCallbacksRef.current.triggerFloatingNotice('Nincs elég agyag és pálmalevél a szigeteléshez!', 'warn');
+        return;
+      }
+      Object.entries(tierCosts).forEach(([k, v]) => {
+        callbacksRef.current.onUpdateInventory(k, -v);
+      });
+      const updated = currentPiecesRef.current.map((p) => (p.id === id ? { ...p, insulated: true } : p));
+      currentPiecesRef.current = updated;
+      rebuildModularBase(updated);
+      if (callbacksRef.current.onUpdateModularBase) {
+        callbacksRef.current.onUpdateModularBase(updated);
+      }
+      sound.playCraftSuccess();
+      hudCallbacksRef.current.showGatherToast(`🧱 ${PIECE_BLUEPRINTS[target.type].nameHu} agyagvakolattal leszigetelve!`, '🛡️');
+    };
+
+    modularBaseControllerRef.current = {
+      rebuild: (p) => rebuildModularBase(p),
+      placePiece: () => handlePlaceCurrentPiece(),
+      demolishPiece: (id: string) => handleDemolishPiece(id),
+      insulatePiece: (id: string) => handleInsulatePiece(id),
+    };
 
     // Campfire with animated pointlight (Coast: x: 74, z: 1244)
     const fireGroup = new THREE.Group();
@@ -971,15 +1219,220 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       });
     });
 
-    // 13. Companion (Maya Vance) 3D Avatar (Coast Base: x: 70, z: 1240)
+    // 13. COMPANION (Maya Vance) 3D AVATAR - Detailed Procedural Character
+    // 21-year-old sole survivor, athletic hiker with bandana, ponytail, utility belt & '89 car key
     const companionGroup = new THREE.Group();
-    const compMat = new THREE.MeshStandardMaterial({ color: 0x00b4d8 });
-    const compHeadMat = new THREE.MeshStandardMaterial({ color: 0xffd166 });
-    const compBody = new THREE.Mesh(new THREE.CapsuleGeometry(0.45, 1.2, 4, 8), compMat);
-    compBody.position.y = 1.1;
-    const compHead = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 8), compHeadMat);
-    compHead.position.y = 2.1;
-    companionGroup.add(compBody, compHead);
+
+    // High quality PBR materials for Maya
+    const mayaSkinMat = new THREE.MeshStandardMaterial({ color: 0xdeb887, roughness: 0.65 });
+    const mayaHairMat = new THREE.MeshStandardMaterial({ color: 0x3d2314, roughness: 0.85 });
+    const mayaBandanaMat = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.7 });
+    const mayaTopMat = new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.75 }); // Coral tank top
+    const mayaTopTrimMat = new THREE.MeshStandardMaterial({ color: 0x06b6d4, roughness: 0.7 }); // Cyan trim
+    const mayaShortsMat = new THREE.MeshStandardMaterial({ color: 0x6b705c, roughness: 0.85 }); // Khaki cargo shorts
+    const mayaBeltMat = new THREE.MeshStandardMaterial({ color: 0x292524, roughness: 0.9 });
+    const mayaBuckleMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.85, roughness: 0.25 });
+    const mayaBootsMat = new THREE.MeshStandardMaterial({ color: 0x3e2723, roughness: 0.8 });
+    const mayaSoleMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.95 });
+    const mayaSocksMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.85 });
+    const mayaPackMat = new THREE.MeshStandardMaterial({ color: 0x3f4f2c, roughness: 0.85 }); // Olive hiking daypack
+    const mayaFlaskMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.9, roughness: 0.2 });
+    const mayaFlaskCapMat = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.5 });
+    const mayaCarKeyMat = new THREE.MeshStandardMaterial({ color: 0xd97706, metalness: 0.9, roughness: 0.3 });
+    const mayaSlothCarabinerMat = new THREE.MeshStandardMaterial({ color: 0x84cc16, roughness: 0.7 }); // Cute plush sloth
+    const mayaEyeMat = new THREE.MeshStandardMaterial({ color: 0x1c1917, roughness: 0.2 });
+    const mayaEyeHighlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const mayaEarringMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.9, roughness: 0.1 });
+    const mayaBraceletMat = new THREE.MeshStandardMaterial({ color: 0xec4899, roughness: 0.8 });
+
+    // FEET & BOOTS
+    const createBoot = (xOffset: number) => {
+      const bootGroup = new THREE.Group();
+      const sole = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.28), mayaSoleMat);
+      sole.position.set(0, 0.025, 0.02);
+      const upper = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.14, 0.26), mayaBootsMat);
+      upper.position.set(0, 0.11, 0.01);
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.08, 0.08, 8), mayaBootsMat);
+      collar.position.set(0, 0.19, -0.02);
+      const sock = new THREE.Mesh(new THREE.CylinderGeometry(0.082, 0.082, 0.07, 8), mayaSocksMat);
+      sock.position.set(0, 0.24, -0.02);
+      bootGroup.add(sole, upper, collar, sock);
+      bootGroup.position.set(xOffset, 0, 0);
+      return bootGroup;
+    };
+    companionGroup.add(createBoot(-0.16));
+    companionGroup.add(createBoot(0.16));
+
+    // LEGS & CARGO SHORTS
+    const leftCalf = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.075, 0.36, 8), mayaSkinMat);
+    leftCalf.position.set(-0.16, 0.42, -0.02);
+    const rightCalf = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.075, 0.36, 8), mayaSkinMat);
+    rightCalf.position.set(0.16, 0.42, -0.02);
+    const leftKnee = new THREE.Mesh(new THREE.SphereGeometry(0.082, 8, 8), mayaSkinMat);
+    leftKnee.position.set(-0.16, 0.60, -0.01);
+    const rightKnee = new THREE.Mesh(new THREE.SphereGeometry(0.082, 8, 8), mayaSkinMat);
+    rightKnee.position.set(0.16, 0.60, -0.01);
+    const leftShortLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.125, 0.105, 0.32, 8), mayaShortsMat);
+    leftShortLeg.position.set(-0.16, 0.74, 0);
+    const rightShortLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.125, 0.105, 0.32, 8), mayaShortsMat);
+    rightShortLeg.position.set(0.16, 0.74, 0);
+    const leftPocket = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.11, 0.11), mayaShortsMat);
+    leftPocket.position.set(-0.28, 0.74, 0);
+    const rightPocket = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.11, 0.11), mayaShortsMat);
+    rightPocket.position.set(0.28, 0.74, 0);
+
+    companionGroup.add(leftCalf, rightCalf, leftKnee, rightKnee, leftShortLeg, rightShortLeg, leftPocket, rightPocket);
+
+    // PELVIS & BELT & PERSONAL CHARMS
+    const pelvis = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.20, 0.20, 8), mayaShortsMat);
+    pelvis.position.set(0, 0.94, 0);
+    const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.06, 12), mayaBeltMat);
+    belt.position.set(0, 1.02, 0);
+    const beltBuckle = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.05, 0.03), mayaBuckleMat);
+    beltBuckle.position.set(0, 1.02, 0.225);
+
+    // Relic on belt: vintage 1989 car key + cute lime sloth carabiner keychain
+    const keyRing = new THREE.Mesh(new THREE.TorusGeometry(0.02, 0.005, 6, 8), mayaBuckleMat);
+    keyRing.position.set(0.21, 0.99, 0.10);
+    const vintageCarKey = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.06, 0.025), mayaCarKeyMat);
+    vintageCarKey.position.set(0.21, 0.94, 0.10);
+    const slothPlush = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 6), mayaSlothCarabinerMat);
+    slothPlush.position.set(0.22, 0.96, 0.13);
+
+    companionGroup.add(pelvis, belt, beltBuckle, keyRing, vintageCarKey, slothPlush);
+
+    // TORSO & CHEST (Coral athletic tank top with trim)
+    const mayaChest = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.17, 0.44, 8), mayaTopMat);
+    mayaChest.position.set(0, 1.25, 0);
+    const tankTopTrim = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.02, 6, 12), mayaTopTrimMat);
+    tankTopTrim.rotation.x = Math.PI / 2;
+    tankTopTrim.position.set(0, 1.45, 0);
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.085, 0.14, 8), mayaSkinMat);
+    neck.position.set(0, 1.51, 0);
+
+    companionGroup.add(mayaChest, tankTopTrim, neck);
+
+    // HIKING DAYPACK (Backpack with stainless water flask & brass compass)
+    const daypack = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.42, 0.18), mayaPackMat);
+    daypack.position.set(0, 1.25, -0.18);
+    const daypackPocket = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.22, 0.07), mayaPackMat);
+    daypackPocket.position.set(0, 1.18, -0.29);
+    const flask = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.20, 8), mayaFlaskMat);
+    flask.position.set(0.18, 1.22, -0.17);
+    const flaskCap = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.04, 8), mayaFlaskCapMat);
+    flaskCap.position.set(0.18, 1.33, -0.17);
+    const leftStrap = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.32, 0.04), mayaBeltMat);
+    leftStrap.position.set(-0.12, 1.30, 0.12);
+    leftStrap.rotation.x = -0.2;
+    const rightStrap = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.32, 0.04), mayaBeltMat);
+    rightStrap.position.set(0.12, 1.30, 0.12);
+    rightStrap.rotation.x = -0.2;
+    const compassBody = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 0.02, 10), mayaBuckleMat);
+    compassBody.position.set(-0.12, 1.28, 0.15);
+    compassBody.rotation.x = Math.PI / 2;
+
+    companionGroup.add(daypack, daypackPocket, flask, flaskCap, leftStrap, rightStrap, compassBody);
+
+    // ARMS & HANDS
+    const leftArmGroup = new THREE.Group();
+    const leftUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.065, 0.30, 8), mayaSkinMat);
+    leftUpperArm.position.set(0, -0.15, 0);
+    const leftForearm = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.055, 0.28, 8), mayaSkinMat);
+    leftForearm.position.set(0, -0.40, 0.05);
+    leftForearm.rotation.x = 0.3;
+    const bracelet = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.012, 6, 12), mayaBraceletMat);
+    bracelet.position.set(0, -0.48, 0.09);
+    bracelet.rotation.x = Math.PI / 2;
+    const leftHand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 6, 6), mayaSkinMat);
+    leftHand.position.set(0, -0.54, 0.11);
+    leftArmGroup.add(leftUpperArm, leftForearm, bracelet, leftHand);
+    leftArmGroup.position.set(-0.30, 1.42, 0);
+    leftArmGroup.rotation.z = 0.1;
+
+    const rightArmGroup = new THREE.Group();
+    const rightUpperArm = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.065, 0.30, 8), mayaSkinMat);
+    rightUpperArm.position.set(0, -0.15, 0);
+    const rightForearm = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.055, 0.28, 8), mayaSkinMat);
+    rightForearm.position.set(0, -0.38, 0.03);
+    const rightHand = new THREE.Mesh(new THREE.SphereGeometry(0.055, 6, 6), mayaSkinMat);
+    rightHand.position.set(0, -0.52, 0.04);
+    rightArmGroup.add(rightUpperArm, rightForearm, rightHand);
+    rightArmGroup.position.set(0.30, 1.42, 0);
+    rightArmGroup.rotation.z = -0.1;
+
+    companionGroup.add(leftArmGroup, rightArmGroup);
+
+    // HEAD & HAIR (Pivot group for head-tracking animation)
+    const mayaHeadPivot = new THREE.Group();
+    mayaHeadPivot.position.set(0, 1.58, 0);
+
+    const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.20, 12, 12), mayaSkinMat);
+    headMesh.scale.set(0.92, 1.05, 0.96);
+    headMesh.position.set(0, 0.10, 0);
+
+    const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), mayaEyeMat);
+    leftEye.position.set(-0.065, 0.11, 0.18);
+    const leftEyeSparkle = new THREE.Mesh(new THREE.SphereGeometry(0.009, 4, 4), mayaEyeHighlightMat);
+    leftEyeSparkle.position.set(-0.060, 0.12, 0.20);
+
+    const rightEye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), mayaEyeMat);
+    rightEye.position.set(0.065, 0.11, 0.18);
+    const rightEyeSparkle = new THREE.Mesh(new THREE.SphereGeometry(0.009, 4, 4), mayaEyeHighlightMat);
+    rightEyeSparkle.position.set(0.070, 0.12, 0.20);
+
+    const smile = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.008, 4, 8, Math.PI), mayaHairMat);
+    smile.rotation.x = Math.PI / 2;
+    smile.rotation.z = Math.PI;
+    smile.position.set(0, 0.04, 0.185);
+
+    const leftEarring = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.007, 4, 10), mayaEarringMat);
+    leftEarring.position.set(-0.19, 0.09, 0);
+    leftEarring.rotation.y = Math.PI / 2;
+    const rightEarring = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.007, 4, 10), mayaEarringMat);
+    rightEarring.position.set(0.19, 0.09, 0);
+    rightEarring.rotation.y = Math.PI / 2;
+
+    const hairCrown = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 10), mayaHairMat);
+    hairCrown.position.set(0, 0.14, -0.03);
+    hairCrown.scale.set(0.96, 0.98, 1.02);
+
+    const bandana = new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.028, 6, 16), mayaBandanaMat);
+    bandana.position.set(0, 0.16, 0.02);
+    bandana.rotation.x = -0.3;
+    const bandanaKnot = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, 0.04), mayaBandanaMat);
+    bandanaKnot.position.set(0, 0.19, -0.19);
+
+    const mayaPonytailPivot = new THREE.Group();
+    mayaPonytailPivot.position.set(0, 0.18, -0.20);
+    const hairBand = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.012, 6, 8), mayaBandanaMat);
+    const ponytailMesh = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.40, 8), mayaHairMat);
+    ponytailMesh.position.set(0, -0.18, -0.06);
+    ponytailMesh.rotation.x = -0.45;
+    mayaPonytailPivot.add(hairBand, ponytailMesh);
+
+    mayaHeadPivot.add(
+      headMesh,
+      leftEye,
+      leftEyeSparkle,
+      rightEye,
+      rightEyeSparkle,
+      smile,
+      leftEarring,
+      rightEarring,
+      hairCrown,
+      bandana,
+      bandanaKnot,
+      mayaPonytailPivot
+    );
+    companionGroup.add(mayaHeadPivot);
+
+    // Store references in userData for render-loop animation
+    companionGroup.userData = {
+      headPivot: mayaHeadPivot,
+      ponytailPivot: mayaPonytailPivot,
+      chest: mayaChest,
+    };
+
     companionGroup.position.set(70, getGroundHeight(70, 1240), 1240);
     scene.add(companionGroup);
 
@@ -1250,7 +1703,22 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         }
       }
       if (e.code === 'KeyR' || e.code === 'Numpad5') {
+        if (buildModeRef.current.active) {
+          setBuildRotation((r) => (r + 90) % 360);
+          sound.playClick();
+          e.preventDefault();
+          return;
+        }
         resetCameraRef.current();
+      }
+      if (buildModeRef.current.active) {
+        if (e.code === 'KeyQ') {
+          setBuildElevation((prev) => Math.max(0, prev - 1));
+          sound.playClick();
+        } else if (e.code === 'KeyT') {
+          setBuildElevation((prev) => Math.min(4, prev + 1));
+          sound.playClick();
+        }
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -1291,6 +1759,84 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
     };
 
     const handle3DObjectClick = (clientX: number, clientY: number): boolean => {
+      // 1. If in 3D Modular Build Mode
+      if (buildModeRef.current.active) {
+        if (buildModeRef.current.subMode === 'build') {
+          handlePlaceCurrentPiece();
+          return true;
+        }
+
+        // SubMode is demolish or insulate: raycast into modularBaseGroup
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          mouseCoord.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+          mouseCoord.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+          raycaster.setFromCamera(mouseCoord, camera);
+          const modularHits = raycaster.intersectObjects(modularBaseGroup.children, true);
+          if (modularHits.length > 0) {
+            let hitObj: THREE.Object3D | null = modularHits[0].object;
+            while (hitObj && !hitObj.userData?.pieceId) {
+              hitObj = hitObj.parent;
+            }
+            if (hitObj && hitObj.userData?.pieceId) {
+              const pId = hitObj.userData.pieceId;
+              if (buildModeRef.current.subMode === 'demolish') {
+                handleDemolishPiece(pId);
+                return true;
+              } else if (buildModeRef.current.subMode === 'insulate') {
+                handleInsulatePiece(pId);
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      }
+
+      // 2. Normal Mode: Check if user clicked on openable door / window in modular base
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        mouseCoord.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+        mouseCoord.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouseCoord, camera);
+        const modularHits = raycaster.intersectObjects(modularBaseGroup.children, true);
+        if (modularHits.length > 0) {
+          let hitObj: THREE.Object3D | null = modularHits[0].object;
+          while (hitObj && !hitObj.userData?.pieceId) {
+            hitObj = hitObj.parent;
+          }
+          if (hitObj && hitObj.userData?.pieceId) {
+            const pId = hitObj.userData.pieceId;
+            const targetPiece = currentPiecesRef.current.find((p) => p.id === pId);
+            if (
+              targetPiece &&
+              (targetPiece.type === 'door' ||
+                targetPiece.type === 'doorframe' ||
+                targetPiece.type === 'window' ||
+                targetPiece.type === 'windowframe' ||
+                targetPiece.type === 'hatchframe')
+            ) {
+              const nextOpen = !targetPiece.isOpen;
+              sound.playMine();
+              hudCallbacksRef.current.showGatherToast(
+                `${PIECE_BLUEPRINTS[targetPiece.type].nameHu}: ${nextOpen ? 'Kinyitva 🔓' : 'Becsukva 🔒'}`,
+                nextOpen ? '🚪' : '🔒'
+              );
+              const updated = currentPiecesRef.current.map((p) =>
+                p.id === pId ? { ...p, isOpen: nextOpen } : p
+              );
+              currentPiecesRef.current = updated;
+              rebuildModularBase(updated);
+              if (callbacksRef.current.onUpdateModularBase) {
+                callbacksRef.current.onUpdateModularBase(updated);
+              }
+              return true;
+            }
+          }
+        }
+      }
+
+      // 3. Fall through to interactive props (trees, stones, campfire, etc.)
       const hit = checkRaycastHit(clientX, clientY);
       if (!hit) return false;
 
@@ -1494,8 +2040,35 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
       waterMat.opacity = 0.82 + Math.sin(time * 0.002) * 0.05;
       firePointLight.intensity = 2.2 + Math.sin(time * 0.02) * 0.5 + Math.cos(time * 0.035) * 0.3;
 
-      // Companion bob
-      companionGroup.position.y = getGroundHeight(companionGroup.position.x, companionGroup.position.z) + Math.sin(time * 0.003) * 0.08;
+      // Companion (Maya Vance) life-like procedural animation:
+      // Subtle terrain ground lock + breathing, ponytail ocean breeze sway, and head-tracking
+      companionGroup.position.y = getGroundHeight(companionGroup.position.x, companionGroup.position.z) + Math.sin(time * 0.0025) * 0.03;
+      if (companionGroup.userData.chest) {
+        const breath = Math.sin(time * 0.003) * 0.02;
+        companionGroup.userData.chest.scale.set(1 + breath, 1, 1 + breath);
+      }
+      if (companionGroup.userData.ponytailPivot) {
+        companionGroup.userData.ponytailPivot.rotation.z = Math.sin(time * 0.002) * 0.08;
+        companionGroup.userData.ponytailPivot.rotation.x = -0.45 + Math.cos(time * 0.003) * 0.05;
+      }
+      if (companionGroup.userData.headPivot) {
+        const dx = player.pos.x - companionGroup.position.x;
+        const dz = player.pos.z - companionGroup.position.z;
+        const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+        if (distToPlayer < 12.0) {
+          // Turn head to look at the player when within 12 meters
+          const targetYaw = Math.atan2(dx, dz) - companionGroup.rotation.y;
+          const clampedYaw = Math.max(-1.2, Math.min(1.2, targetYaw));
+          companionGroup.userData.headPivot.rotation.y += (clampedYaw - companionGroup.userData.headPivot.rotation.y) * 0.06;
+          const dy = (player.pos.y + 1.5) - (companionGroup.position.y + 1.6);
+          const targetPitch = Math.max(-0.35, Math.min(0.35, Math.atan2(dy, Math.max(1.0, distToPlayer))));
+          companionGroup.userData.headPivot.rotation.x += (targetPitch - companionGroup.userData.headPivot.rotation.x) * 0.06;
+        } else {
+          // Relaxed idling look forward
+          companionGroup.userData.headPivot.rotation.y += (0 - companionGroup.userData.headPivot.rotation.y) * 0.04;
+          companionGroup.userData.headPivot.rotation.x += (0 - companionGroup.userData.headPivot.rotation.x) * 0.04;
+        }
+      }
 
       // Crystal spin
       crystal.rotation.y = time * 0.001;
@@ -1718,6 +2291,95 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         nearestPropRef.current = null;
       }
 
+      // Update 3D Modular Base Hologram & Snapping Preview
+      if (buildModeRef.current.active) {
+        buildGridHelper.visible = true;
+
+        // Aim ~5.5m in front of player orientation
+        const aimDist = 5.2;
+        const aimX = player.pos.x - Math.sin(cam.yaw) * aimDist;
+        const aimZ = player.pos.z - Math.cos(cam.yaw) * aimDist;
+
+        // Snap to 2x2m grid relative to BASE_ORIGIN
+        const snapGridX = Math.round((aimX - BASE_ORIGIN.x) / 2.0);
+        const snapGridZ = Math.round((aimZ - BASE_ORIGIN.z) / 2.0);
+        const elev = buildModeRef.current.elevation;
+        const curPieceType = buildModeRef.current.pieceType;
+        const curTier = buildModeRef.current.tier;
+        const curRotation = buildModeRef.current.rotation;
+
+        // Check placement validity
+        let isValid = true;
+        let previewSI = 100;
+
+        if (curPieceType === 'foundation' || curPieceType === 'stairs_1m') {
+          if (elev !== 0) isValid = false;
+          previewSI = 100;
+        } else {
+          if (elev === 0) {
+            const hasFoundation = currentPiecesRef.current.some(
+              (p) => p.gridX === snapGridX && p.gridZ === snapGridZ && (p.type === 'foundation' || p.elevation === elev)
+            );
+            isValid = hasFoundation || currentPiecesRef.current.length === 0;
+            previewSI = 100;
+          } else {
+            const pieceBelow = currentPiecesRef.current.find(
+              (p) => p.gridX === snapGridX && p.gridZ === snapGridZ && p.elevation === elev - 1
+            );
+            if (pieceBelow) {
+              previewSI = Math.max(10, pieceBelow.si - 10);
+              isValid = true;
+            } else {
+              const adjacent = currentPiecesRef.current.find(
+                (p) =>
+                  p.elevation === elev &&
+                  Math.abs(p.gridX - snapGridX) + Math.abs(p.gridZ - snapGridZ) === 1
+              );
+              if (adjacent && adjacent.si >= 60) {
+                previewSI = Math.max(10, adjacent.si - 50);
+                isValid = true;
+              } else {
+                isValid = false;
+                previewSI = 0;
+              }
+            }
+          }
+        }
+
+        const affordRes = canAffordPiece(curPieceType, curTier, callbacksRef.current.gameState.inventory);
+        const canAfford = affordRes.canAfford;
+        const canPlace = isValid && canAfford;
+
+        // Update Ghost hologram mesh
+        const ghostKey = `${curPieceType}-${curTier}-${canPlace}-${curRotation}`;
+        if (!ghostGroup || ghostGroup.userData.key !== ghostKey) {
+          if (ghostGroup) scene.remove(ghostGroup);
+          ghostGroup = createGhostPreviewGroup(curPieceType, curTier, canPlace);
+          ghostGroup.userData.key = ghostKey;
+          scene.add(ghostGroup);
+        }
+
+        const targetGhostX = BASE_ORIGIN.x + snapGridX * 2.0;
+        const targetGhostZ = BASE_ORIGIN.z + snapGridZ * 2.0;
+        const targetGhostY = baseOriginGroundY + elev * 2.0;
+
+        ghostGroup.position.set(targetGhostX, targetGhostY, targetGhostZ);
+        ghostGroup.rotation.y = (curRotation * Math.PI) / 180;
+        ghostGroup.visible = true;
+
+        snapStatusRef.current = {
+          x: snapGridX,
+          z: snapGridZ,
+          elevation: elev,
+          si: previewSI,
+          isValid,
+          canAfford,
+        };
+      } else {
+        buildGridHelper.visible = false;
+        if (ghostGroup) ghostGroup.visible = false;
+      }
+
       // Camera positioning (FPS vs True 360° TPS Orbit)
       if (cameraMode === 'fps') {
         camera.position.set(player.pos.x, player.pos.y + 0.35, player.pos.z);
@@ -1899,6 +2561,26 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 pointer-events-auto">
+          {/* 3D Modular Base Building Mode Toggle */}
+          <button
+            onClick={() => {
+              sound.playClick();
+              setBuildModeActive(!buildModeActive);
+            }}
+            className={`p-2 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition shadow ${
+              buildModeActive
+                ? 'bg-amber-600 border-amber-400 text-white shadow-amber-900/50 ring-1 ring-amber-400/50'
+                : 'bg-slate-900/90 hover:bg-slate-800 border-stone-700 text-stone-300'
+            }`}
+            title="3D Moduláris Építő Mód (2x2m Grid & Snapping, Szalma/Fa/Kő, SI Stabilitás)"
+          >
+            <Hammer className={`w-4 h-4 ${buildModeActive ? 'text-white animate-bounce' : 'text-amber-400'}`} />
+            <span className="hidden sm:inline">3D Építés</span>
+            {buildModeActive && (
+              <span className="text-[10px] bg-amber-800 px-1.5 py-0.2 rounded font-bold">AKTÍV</span>
+            )}
+          </button>
+
           {/* Waypoints Quick-Travel Dropdown Button */}
           <button
             onClick={() => {
@@ -2116,8 +2798,279 @@ export const ThreeDView: React.FC<ThreeDViewProps> = ({
         </div>
       )}
 
+      {/* 3D MODULAR BASE BUILDING DOCK (GDD: Trópusi Sziget Építési Rendszer) */}
+      {buildModeActive && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[95%] max-w-4xl z-40 bg-slate-950/95 border border-amber-500/70 rounded-2xl shadow-2xl backdrop-blur-md p-3 flex flex-col gap-2.5 animate-in fade-in slide-in-from-bottom-3 pointer-events-auto">
+          {/* Top Row: Sub-mode tabs, Tier selector, Close button */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-stone-800">
+            {/* Sub-modes */}
+            <div className="flex items-center gap-1 bg-stone-900/90 p-1 rounded-xl border border-stone-800">
+              <button
+                onClick={() => {
+                  sound.playClick();
+                  setBuildSubMode('build');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  buildSubMode === 'build'
+                    ? 'bg-amber-600 text-white shadow'
+                    : 'text-stone-300 hover:text-white hover:bg-stone-800'
+                }`}
+              >
+                <Hammer className="w-3.5 h-3.5" />
+                <span>Építés</span>
+              </button>
+              <button
+                onClick={() => {
+                  sound.playClick();
+                  setBuildSubMode('insulate');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  buildSubMode === 'insulate'
+                    ? 'bg-orange-700 text-white shadow'
+                    : 'text-stone-300 hover:text-white hover:bg-stone-800'
+                }`}
+                title="Agyagréteg felvitele külső falakra és tetőre (3 Agyag, 2 Pálmalevél)"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Szigetelés</span>
+              </button>
+              <button
+                onClick={() => {
+                  sound.playClick();
+                  setBuildSubMode('demolish');
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition ${
+                  buildSubMode === 'demolish'
+                    ? 'bg-red-700 text-white shadow'
+                    : 'text-stone-300 hover:text-white hover:bg-stone-800'
+                }`}
+                title="Elem visszabontása 50% nyersanyag-visszatérítéssel. Figyelj a láncreakciós összeomlásra!"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Bontás (50% Refund)</span>
+              </button>
+            </div>
+
+            {/* Tier selector (only when in build mode) */}
+            {buildSubMode === 'build' && (
+              <div className="flex items-center gap-1">
+                {(['thatch', 'wood', 'stone'] as BuildingTier[]).map((t) => {
+                  const cfg = TIER_CONFIG[t];
+                  const isAvailable = PIECE_BLUEPRINTS[buildPieceType]?.allowedTiers.includes(t);
+                  return (
+                    <button
+                      key={t}
+                      disabled={!isAvailable}
+                      onClick={() => {
+                        sound.playClick();
+                        setBuildTier(t);
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition ${
+                        buildTier === t
+                          ? `${cfg.badgeClass} ring-1 ring-amber-400 font-bold`
+                          : isAvailable
+                          ? 'bg-stone-900/80 border-stone-700 text-stone-400 hover:text-stone-200'
+                          : 'opacity-40 cursor-not-allowed bg-stone-950 border-stone-900 text-stone-600'
+                      }`}
+                    >
+                      {cfg.nameHu.split(' ')[1]}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Close button */}
+            <button
+              onClick={() => {
+                sound.playClick();
+                setBuildModeActive(false);
+              }}
+              className="p-1.5 rounded-lg bg-stone-900 hover:bg-stone-800 border border-stone-700 text-stone-400 hover:text-stone-100 transition"
+              title="Kilépés az építő módból"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* SubMode: Build -> Piece Selector & Info Strip */}
+          {buildSubMode === 'build' && (
+            <>
+              {/* Category Pills & Pieces Horizontal Carousel / Grid */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                {Object.values(PIECE_BLUEPRINTS).map((bp) => {
+                  const isSelected = buildPieceType === bp.type;
+                  const canAfford = canAffordPiece(bp.type, buildTier, gameState.inventory).canAfford;
+                  const isTierAllowed = bp.allowedTiers.includes(buildTier);
+                  return (
+                    <button
+                      key={bp.type}
+                      disabled={!isTierAllowed}
+                      onClick={() => {
+                        sound.playClick();
+                        setBuildPieceType(bp.type);
+                      }}
+                      className={`shrink-0 px-3 py-2 rounded-xl border text-left transition flex flex-col justify-between min-w-[130px] ${
+                        isSelected
+                          ? 'bg-amber-950/80 border-amber-500 text-white ring-1 ring-amber-400/50'
+                          : isTierAllowed
+                          ? canAfford
+                            ? 'bg-stone-900/80 hover:bg-stone-800 border-stone-700 text-stone-300'
+                            : 'bg-stone-900/40 hover:bg-stone-800/40 border-stone-800 text-stone-400'
+                          : 'opacity-30 cursor-not-allowed bg-stone-950 border-stone-900 text-stone-600'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full mb-1">
+                        <span className="text-[11px] font-bold truncate">{bp.nameHu.split(' (')[0]}</span>
+                        {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px]">
+                        <span className={canAfford ? 'text-emerald-400 font-bold' : 'text-stone-500'}>
+                          {canAfford ? '✓ Készíthető' : 'Nincs elég alapanyag'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Bottom Construction HUD: Grid Snap, Elevation, Rotation, SI %, Cost & Build Button */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-stone-800 text-xs">
+                {/* Placement Parameters: Coords, Height, Rotation */}
+                <div className="flex items-center gap-2">
+                  <div className="bg-stone-900/90 border border-stone-700 rounded-lg px-2.5 py-1 text-stone-300 font-mono text-[11px]">
+                    Rács: <strong className="text-cyan-300">X:{snapStatus.x} Z:{snapStatus.z}</strong>
+                  </div>
+
+                  {/* Elevation (Szint) */}
+                  <div className="bg-stone-900/90 border border-stone-700 rounded-lg px-2 py-0.5 flex items-center gap-1.5">
+                    <span className="text-[11px] text-stone-400 font-medium">Szint:</span>
+                    <button
+                      onClick={() => {
+                        sound.playClick();
+                        setBuildElevation((prev) => Math.max(0, prev - 1));
+                      }}
+                      className="w-5 h-5 rounded bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs flex items-center justify-center font-bold"
+                      title="Szint csökkentése (Q)"
+                    >
+                      -
+                    </button>
+                    <span className="font-mono text-[11px] text-amber-300 font-bold min-w-[20px] text-center">
+                      {buildElevation}F
+                    </span>
+                    <button
+                      onClick={() => {
+                        sound.playClick();
+                        setBuildElevation((prev) => Math.min(4, prev + 1));
+                      }}
+                      className="w-5 h-5 rounded bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs flex items-center justify-center font-bold"
+                      title="Szint növelése (T)"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  {/* Rotation (Forgatás) */}
+                  <button
+                    onClick={() => {
+                      sound.playClick();
+                      setBuildRotation((r) => (r + 90) % 360);
+                    }}
+                    className="bg-stone-900/90 hover:bg-stone-800 border border-stone-700 rounded-lg px-2.5 py-1 flex items-center gap-1 text-[11px] text-stone-200 transition"
+                    title="Forgatás 90 fokkal (R gomb)"
+                  >
+                    <RefreshCw className="w-3 h-3 text-amber-400" />
+                    <span>{buildRotation}°</span>
+                  </button>
+
+                  {/* SI Preview */}
+                  <div
+                    className={`border rounded-lg px-2.5 py-1 text-[11px] font-bold flex items-center gap-1 ${
+                      snapStatus.si >= 80
+                        ? 'bg-emerald-950/80 border-emerald-500/80 text-emerald-300'
+                        : snapStatus.si >= 40
+                        ? 'bg-amber-950/80 border-amber-500/80 text-amber-300'
+                        : 'bg-red-950/80 border-red-500/80 text-red-300'
+                    }`}
+                  >
+                    <span>SI:</span>
+                    <span>{snapStatus.si}%</span>
+                  </div>
+                </div>
+
+                {/* Cost tags and Place Button */}
+                <div className="flex items-center gap-2">
+                  <div className="hidden sm:flex items-center gap-1.5 text-[11px]">
+                    {Object.entries(PIECE_BLUEPRINTS[buildPieceType].cost[buildTier]).map(([item, req]) => {
+                      const hasEnough = (gameState.inventory[item] || 0) >= req;
+                      return (
+                        <span
+                          key={item}
+                          className={`px-2 py-0.5 rounded border text-[10px] font-mono ${
+                            hasEnough
+                              ? 'bg-emerald-950/60 border-emerald-800/80 text-emerald-300'
+                              : 'bg-red-950/60 border-red-800/80 text-red-300'
+                          }`}
+                        >
+                          {item}: {gameState.inventory[item] || 0}/{req}
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    disabled={!snapStatus.isValid || !snapStatus.canAfford}
+                    onClick={() => modularBaseControllerRef.current?.placePiece()}
+                    className={`px-4 py-2 rounded-xl font-bold text-xs flex items-center gap-2 shadow-lg transition active:scale-95 ${
+                      snapStatus.isValid && snapStatus.canAfford
+                        ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-900/60 ring-1 ring-amber-400/50'
+                        : 'bg-stone-800 text-stone-500 border border-stone-700 cursor-not-allowed'
+                    }`}
+                  >
+                    <Hammer className="w-4 h-4" />
+                    <span>LERAKÁS</span>
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* SubMode: Insulate Instructions */}
+          {buildSubMode === 'insulate' && (
+            <div className="flex items-center justify-between gap-3 p-2 bg-orange-950/60 border border-orange-800/60 rounded-xl text-xs text-orange-200">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-orange-400 shrink-0" />
+                <span>
+                  <strong>Agyag / Pálmalevél szigetelés:</strong> Kattints bármelyik falra, födémre vagy tetőre a 3D nézetben!
+                  (Költség: 3 Agyag, 2 Pálmalevél). Teljes szigetelés esetén a kánikulai 38°C helyett 24-26°C lesz a belső térben!
+                </span>
+              </div>
+              <div className="shrink-0 font-mono text-[11px] bg-orange-900/60 px-2 py-1 rounded border border-orange-700/60">
+                Agyag: {gameState.inventory.river_clay || 0}/3 • Levél: {gameState.inventory.palm_leaves || 0}/2
+              </div>
+            </div>
+          )}
+
+          {/* SubMode: Demolish Instructions */}
+          {buildSubMode === 'demolish' && (
+            <div className="flex items-center justify-between gap-3 p-2 bg-red-950/60 border border-red-800/60 rounded-xl text-xs text-red-200">
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-4 h-4 text-red-400 shrink-0" />
+                <span>
+                  <strong>Bontó Mód (50% Nyersanyag-visszatérítés):</strong> Kattints a lebontani kívánt moduláris elemre a 3D nézetben!
+                  Figyelem: az alapzat vagy tartófal bontása láncreakciós összeomlást (Cascading Collapse) idézhet elő a felette lévő elemeken!
+                </span>
+              </div>
+              <span className="shrink-0 text-[10px] font-bold bg-red-900/80 px-2.5 py-1 rounded text-red-200 border border-red-700">
+                Láncreakciós SI aktív
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ON-SCREEN TACTILE MOBILE CONTROLLER HUD */}
-      {showTouchControls && (
+      {showTouchControls && !buildModeActive && (
         <div className="absolute inset-x-0 bottom-2 px-3 flex items-end justify-between pointer-events-none">
           {/* Left Side: Tactile Directional D-Pad */}
           <div className="pointer-events-auto flex flex-col items-center select-none touch-none">

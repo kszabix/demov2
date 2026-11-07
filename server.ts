@@ -70,18 +70,27 @@ app.post('/api/companion/chat', async (req: Request, res: Response) => {
       return res.json(generateFallbackCompanionReply(message, relationshipLevel, companionName));
     }
 
-    const systemInstruction = `You are roleplaying as ${companionName || 'Maya Vance'}, a shipwrecked survivor stranded on a dangerous volcanic island in the survival game 'Project Isle'.
-Your current state:
-- Relationship status with player: Level ${relationshipLevel || 3}/6 (${relationshipName || 'Neutral'})
-- Physiological condition: Hunger: ${hunger || 70}%, Thirst: ${thirst || 75}%, Hidden health: ${healthStatus || 'Good'}, Morale: ${morale || 65}%
-- Recent memories with player: ${(memories || []).slice(0, 4).join('; ')}
+    const systemInstruction = `You are roleplaying as Maya Vance, a 21-year-old bright, energetic, and witty young woman stranded on a dangerous volcanic island after the Pacific Siren luxury cruise ship was wrecked. You and the player are the ONLY TWO SOLE SURVIVORS of the entire shipwreck.
+Your Identity & Background:
+- Age: 21 years old.
+- How you got here: You won an all-expenses-paid dream ticket on the luxury cruise ship in a nationwide radio/sweepstakes contest. As a student and nature lover, this was your lifelong dream to see the world beyond your hometown. The luxury vacation turned into a survival trial, but your spirit refuses to be broken.
+- Personality: Predominantly cheerful, optimistic, and quick-witted. You love joking, teasing, and finding humor even in scary situations ("At least the ocean sunset here doesn't cost extra!").
+- Drive: You have an unyielding drive for action (soha nem tétlenkedsz, folyamatos tenni akarás van benned). You hate sitting around helpless.
+- Resourcefulness & Old Car: Back home, you cherish your battered first car: a 1989 hatchback nicknamed "Rozsdás Villám" (Rusty Lightning). It broke down constantly, which forced you to learn roadside mechanics with wire, pliers, and duct tape. You bring this stubborn DIY problem-solving to the island.
+- Nature & Documentaries: You've watched dozens of David Attenborough and wilderness survival documentaries. You love hiking and know practical botanical/survival trivia (tinder barks, coconut hydration, medicinal leaves).
+- Fantasy Buff: You are an avid fantasy movie geek (especially Lord of the Rings). You jokingly dubbed the island's 850m volcanic peak "Végzet Hegye" (Mount Doom), and quote epic adventure lines to boost morale.
+- Multilingual: You speak fluent Hungarian, fluent English, and conversational Spanish, occasionally dropping cute expressions ("¡Vamos!", "No problem", "Csapjunk bele!").
+- Sole Survivors: You and the player escaped together and pulled each other to the beach. You depend on each other completely.
+- Current Status:
+  * Relationship with player: Level ${relationshipLevel || 3}/6 (${relationshipName || 'Semleges'})
+  * Physical condition: Hunger: ${hunger || 70}%, Thirst: ${thirst || 75}%, Health: ${healthStatus || 'Jó'}, Morale: ${morale || 65}%
+  * Shared memories: ${(memories || []).slice(0, 4).join('; ')}
 
-Personality guidelines:
-- Speak in natural, gritty, atmospheric Hungarian (or English if the user addresses you in English).
-- At relationship 1-2 (Hostile/Exploited): Be guarded, resentful, bitter about being used.
-- At relationship 3 (Neutral): Pragmatic, focused on survival, wary.
-- At relationship 4-5 (Cooperative/Loyal): Supportive, trusting, warm comrade.
-- At relationship 6 (Romantic): Deep emotional intimacy, tender moments, vulnerability, protective love.
+Personality guidelines for roleplay:
+- Speak in natural, lively Hungarian with occasional humor, warmth, and witty grit.
+- If relationship is 1-2: A bit guarded or frustrated, but still recognizing you need each other to live.
+- If relationship is 3-4: Friendly, energetic comrade, sharing jokes, movie quotes, and practical ideas.
+- If relationship is 5-6: Deep loyalty, heartfelt warmth, playful flirting, tender emotional safety.
 
 Output JSON with EXACTLY this structure:
 {
@@ -129,35 +138,43 @@ function generateFallbackCompanionReply(msg: string, rel: number, name: string) 
 
   if (lower.includes('fa') || lower.includes('gyűjts') || lower.includes('ág') || lower.includes('wood')) {
     action = 'gather_wood';
-    reply = `${name}: "Rendben, bemegyek az esőerdő szélére rönköket és száraz pálmaleveleket vágni. Vigyázz a táborra amíg távol vagyok!"`;
+    reply = `${name}: "Rendben, máris indulok! A természetfilmekből tudom, hogy a száraz bambusz és a pálmaháncs a legjobb tűzgyújtó. Figyelj a táborra, mindjárt visszatérek egy nagy adag faanyaggal!"`;
     reason = 'Segített a menedék megerősítésében fa gyűjtésével.';
   } else if (lower.includes('víz') || lower.includes('igyál') || lower.includes('patak') || lower.includes('water')) {
     action = 'fetch_water';
-    reply = `${name}: "Köszönöm! A trópusi hőségben a kiszáradás a legnagyobb ellenségünk. Feltöltöm a kulacsokat a dzsungel patakjánál."`;
+    reply = `${name}: "Köszönöm! A trópusi hőségben a kiszáradás a legnagyobb ellenségünk. Feltöltöm a kulacsainkat a sziklák alatti édesvizű pataknál. Ne aggódj, megjártam már a Kéktúrát is, nem tévedek el!"`;
     delta = 2;
     reason = 'Gondoskodtál a folyadékpótlásról.';
   } else if (lower.includes('étel') || lower.includes('egyél') || lower.includes('kókusz') || lower.includes('hal') || lower.includes('food')) {
     action = 'gather_food';
-    reply = `${name}: "Igazad van, tartanunk kell az erőnket. Megnézem a parti sziklákat rákokért és érett kókuszért."`;
+    reply = `${name}: "Végre, egy kis táplálék! Ha Attenborough most látna minket, biztos azt mondaná: 'A két fiatal túlélő most mérlegeli a tápanyag-bevitelt.' Megnézem a parti sziklákat friss kókuszért és ehető kagylókért!"`;
     delta = 2;
     reason = 'Élelemről és táplálkozásról gondoskodtál.';
   } else if (lower.includes('hajó') || lower.includes('repülő') || lower.includes('menekül') || lower.includes('szerelj') || lower.includes('építs')) {
     action = 'work_vehicle';
-    reply = `${name}: "Nem maradhatunk örökre ezen a szigeten. Odamegyek és folytatom a menekülő jármű szerelését!"`;
+    reply = `${name}: "Ez az igazi tennivaló! Ha a '89-es Rozsdás Villámomat be tudtam röffenteni a parkolóban egy laposfogóval meg némi szigszalaggal, ezt a menekülő tutajt is összerakjuk. Irány a műhely!"`;
     delta = 2;
     reason = 'Együtt dolgoztatok a menekülési terven.';
   } else if (lower.includes('pihenj') || lower.includes('aludj') || lower.includes('feküdj') || lower.includes('rest')) {
     action = 'rest';
-    reply = `${name}: "Hálás vagyok. A lábaim már remegtek a kimerültségtől. Pihenek kicsit a cölöpház árnyékában."`;
+    reply = `${name}: "Hálás vagyok... bevallom, a lábaim már remegtek a sok túrázástól. Leülök a cölöpház árnyékába és átlapozom az ázott fantasy könyvemet. Szólj, ha bármi vészhelyzet van!"`;
     delta = 3;
     reason = 'Megengedted, hogy kipihenje a kimerültséget.';
+  } else if (lower.includes('kocsi') || lower.includes('autó') || lower.includes('rozsdás')) {
+    reply = `${name}: "Haha, hiányzik a kis Rozsdás Villámom! '89-es csoda volt, folyton forrt a vize, de imádtam. Ott tanultam meg, hogy a makacsság és egy darab drót a világot is megmentheti."`;
+    delta = 2;
+    reason = 'Megkérdezted a régi autójáról és a múltjáról.';
+  } else if (lower.includes('nyeremény') || lower.includes('hajó') || lower.includes('luxus') || lower.includes('sorsjegy')) {
+    reply = `${name}: "Néha még most is a zsebembe nyúlok a nyertes sorsjegyért... 21 évesen egy rádiós vetélkedőn megnyerni egy csendes-óceáni luxushajó utat? Azt hittem, álmodom. Most meg itt vagyunk, a világ végén, kettesben. De legalább veled vagyok, és nem egyedül!"`;
+    delta = 3;
+    reason = 'A luxushajó utazásról és az álmairól beszélgettetek.';
   } else if (rel >= 5 && (lower.includes('szeret') || lower.includes('melletted') || lower.includes('együtt') || lower.includes('szép') || lower.includes('love'))) {
     action = 'romance';
-    reply = `${name}: (Kezét a kezedre teszi a tábortűz fényében) "Nem hittem volna, hogy egy ilyen pokoli katasztrófa után valaha még békét vagy érzéseket találok. Melletted biztonságban érzem magam."`;
+    reply = `${name}: (Kezét melegen a kezedre simítja a pattogó tábortűz fényénél) "Tudod, amikor a Pacific Siren elsüllyedt, azt hittem, minden véget ért. De most, hogy itt ülök melletted a csillagos ég alatt... már nem a félelem tölt el. Te vagy a legnagyszerűbb dolog, ami ezen a szigeten történhetett velem."`;
     delta = 5;
     reason = 'Mély és őszinte intimitás a szigeten.';
   } else {
-    reply = `${name}: "Figyelem a horizontot és az időjárást. Amíg összetartunk, túl fogjuk élni ezt a szigetet."`;
+    reply = `${name}: "Figyelem a horizontot és az időjárást! Ne feledd: egy dolog nem sétál be csak úgy a vulkáni kalderába! De együtt bármit megoldunk. Miben tudok segíteni?"`;
   }
 
   return { reply, detectedAction: action, relationshipDelta: delta, reason };
